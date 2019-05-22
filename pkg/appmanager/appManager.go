@@ -659,9 +659,15 @@ func (appMgr *Manager) getNamespaceInformerLocked(
 }
 
 func (appInf *appInformer) start() {
-	go appInf.svcInformer.Run(appInf.stopCh)
-	go appInf.endptInformer.Run(appInf.stopCh)
-	go appInf.ingInformer.Run(appInf.stopCh)
+	if nil != appInf.svcInformer {
+		go appInf.svcInformer.Run(appInf.stopCh)
+	}
+	if nil != appInf.endptInformer {
+		go appInf.endptInformer.Run(appInf.stopCh)
+	}
+	if nil != appInf.ingInformer {
+		go appInf.ingInformer.Run(appInf.stopCh)
+	}
 	if nil != appInf.routeInformer {
 		go appInf.routeInformer.Run(appInf.stopCh)
 	}
@@ -671,10 +677,16 @@ func (appInf *appInformer) start() {
 }
 
 func (appInf *appInformer) waitForCacheSync() {
-	cacheSyncs := []cache.InformerSynced{
-		appInf.svcInformer.HasSynced,
-		appInf.endptInformer.HasSynced,
-		appInf.ingInformer.HasSynced,
+	cacheSyncs := []cache.InformerSynced{}
+
+	if nil != appInf.svcInformer {
+		cacheSyncs = append(cacheSyncs, appInf.svcInformer.HasSynced)
+	}
+	if nil != appInf.endptInformer {
+		cacheSyncs = append(cacheSyncs, appInf.endptInformer.HasSynced)
+	}
+	if nil != appInf.ingInformer {
+		cacheSyncs = append(cacheSyncs, appInf.ingInformer.HasSynced)
 	}
 	if nil != appInf.routeInformer {
 		cacheSyncs = append(cacheSyncs, appInf.routeInformer.HasSynced)
@@ -746,6 +758,9 @@ func (appMgr *Manager) startAppInformersLocked() {
 	for _, appInf := range appMgr.appInformers {
 		appInf.start()
 	}
+	if nil != appMgr.as3Informer {
+		appMgr.as3Informer.start()
+	}
 }
 
 func (appMgr *Manager) waitForCacheSync() {
@@ -758,6 +773,9 @@ func (appMgr *Manager) waitForCacheSyncLocked() {
 	for _, appInf := range appMgr.appInformers {
 		appInf.waitForCacheSync()
 	}
+	if nil != appMgr.as3Informer {
+		appMgr.as3Informer.waitForCacheSync()
+	}
 }
 
 func (appMgr *Manager) stopAppInformers() {
@@ -765,6 +783,9 @@ func (appMgr *Manager) stopAppInformers() {
 	defer appMgr.informersMutex.Unlock()
 	for _, appInf := range appMgr.appInformers {
 		appInf.stopInformers()
+	}
+	if nil != appMgr.as3Informer {
+		appMgr.as3Informer.stopInformers()
 	}
 }
 
