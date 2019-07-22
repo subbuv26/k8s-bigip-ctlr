@@ -142,6 +142,7 @@ type (
 		VirtualPort            int               `json:"virtualPort,omitempty"`
 		SNAT                   string            `json:"snat,omitempty"`
 		PolicyEndpoint         as3MultiTypeParam `json:"policyEndpoint,omitempty"`
+		ServerTLS              as3MultiTypeParam `json:"serverTLS,omitempty"`
 	}
 
 	// as3Monitor maps to the following in AS3 Resources
@@ -162,5 +163,23 @@ type (
 		TargetPort        *int    `json:"targetPort,omitempty"`
 		ClientCertificate string  `json:"clientCertificate,omitempty"`
 		Ciphers           string  `json:"ciphers,omitempty"`
+	}
+
+	// as3Certificate maps to Certificate in AS3 Resources
+	as3Certificate struct {
+		Class       string            `json:"class,omitempty"`
+		Certificate as3MultiTypeParam `json:"certificate,omitempty"`
+		PrivateKey  as3MultiTypeParam `json:"privateKey,omitempty"`
+	}
+
+	// as3TLSServer maps to TLS_Server in AS3 Resources
+	as3TLSServer struct {
+		Class        string                    `json:"class,omitempty"`
+		Certificates []as3TLSServerCertificate `json:"certificates,omitempty"`
+	}
+
+	// as3TLSServerCertificates maps to TLS_Server_certificates in AS3 Resources
+	as3TLSServerCertificate struct {
+		Certificate string `json:"certificate,omitempty"`
 	}
 )

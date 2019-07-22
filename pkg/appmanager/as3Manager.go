@@ -752,46 +752,32 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 	sharedApp["template"] = "shared"
 	for _, cfg := range appMgr.resources.GetAllResources() {
 		//Process only route data
-		if cfg.MetaData.ResourceType == "route" {
-			if len(cfg.Virtual.Policies) != 0 {
-				if BigIPPartition == "" {
-					BigIPPartition = cfg.Virtual.Policies[0].Partition + "_AS3"
-				}
-				policyCreated = true
+
+		if len(cfg.Virtual.Policies) != 0 {
+			if BigIPPartition == "" {
+				BigIPPartition = cfg.Virtual.Policies[0].Partition + "_AS3"
 			}
-			for _, pl := range cfg.Policies {
-				//Create EndpointPolicy
-				ep := as3EndpointPolicy{}
-				for _, rl := range pl.Rules {
-
-					ep.Class = "Endpoint_Policy"
-					s := strings.Split(pl.Strategy, "/")
-					ep.Strategy = s[len(s)-1]
-
-					//Create rules
-					rulesData := &as3Rule{Name: as3FormatedString(rl.Name)}
-
-					//Create condition object
-					createRouteRuleCondition(rl, rulesData)
-
-					//Creat action object
-					createRouteRuleAction(rl, rulesData)
-
-					ep.Rules = append(ep.Rules, *rulesData)
-				}
-				//Setting Endpoint_Policy Name
-				sharedApp[as3FormatedString(pl.Name)] = ep
-			}
-
-			//Create pools
-			createPoolDecl(cfg.Pools, sharedApp)
-
-			//Create AS3 Service for virtual server
-			createServiceDecl(cfg, sharedApp)
-
-			//Create health monitor declaration
-			createMonitorDecl(cfg, sharedApp)
+			policyCreated = true
 		}
+
+		//Create policies
+		createPoliciesDecl(cfg, sharedApp)
+
+		//Create health monitor declaration
+		createMonitorDecl(cfg, sharedApp)
+
+		//Create pools
+		createPoolDecl(cfg.Pools, sharedApp)
+
+		//Create AS3 Service for virtual server
+		createServiceDecl(cfg, sharedApp)
+	}
+
+	for key, prof := range appMgr.customProfiles.profs {
+		createCertificateDecl(prof, sharedApp)
+		createTLSServer(prof, sharedApp)
+		svc := sharedApp[key.ResourceName].(as3Service)
+		svc.ServerTLS = "PLACEHOLDER_TLS_SERVER"
 	}
 
 	// No Policy created, hence no route declaration
@@ -809,8 +795,34 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 	return as3JSONDecl, true
 }
 
+func createPoliciesDecl(cfg *ResourceConfig, sharedApp as3Application) {
+	for _, pl := range cfg.Policies {
+		//Create EndpointPolicy
+		ep := as3EndpointPolicy{}
+		for _, rl := range pl.Rules {
+
+			ep.Class = "Endpoint_Policy"
+			s := strings.Split(pl.Strategy, "/")
+			ep.Strategy = s[len(s)-1]
+
+			//Create rules
+			rulesData := &as3Rule{Name: as3FormatedString(rl.Name)}
+
+			//Create condition object
+			createRouteRuleCondition(rl, rulesData)
+
+			//Creat action object
+			createRouteRuleAction(rl, rulesData)
+
+			ep.Rules = append(ep.Rules, *rulesData)
+		}
+		//Setting Endpoint_Policy Name
+		sharedApp[as3FormatedString(pl.Name)] = ep
+	}
+}
+
 // Create AS3 Pools for Route
-func createPoolDecl(pools Pools, sharedApp map[string]interface{}) {
+func createPoolDecl(pools Pools, sharedApp as3Application) {
 	for _, v := range pools {
 		var pool as3Pool
 		pool.LoadBalancingMode = v.Balance
@@ -837,7 +849,7 @@ func createPoolDecl(pools Pools, sharedApp map[string]interface{}) {
 }
 
 // Create AS3 Service for Route
-func createServiceDecl(cfg *ResourceConfig, sharedApp map[string]interface{}) {
+func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 	var svc as3Service
 
 	if len(cfg.Virtual.Policies) == 1 {
@@ -890,7 +902,7 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp map[string]interface{}) {
 	svc.VirtualPort = port
 	svc.SNAT = "auto"
 
-	sharedApp[as3FormatedString(cfg.Virtual.Name)] = svc
+	sharedApp[as3FormatedString(cfg.Virtual.Name)] = &svc
 }
 
 // Create AS3 Rule Condition for Route
@@ -954,7 +966,7 @@ func createRouteRuleAction(rl *Rule, rulesData *as3Rule) {
 }
 
 //Create health monitor declaration
-func createMonitorDecl(cfg *ResourceConfig, sharedApp map[string]interface{}) {
+func createMonitorDecl(cfg *ResourceConfig, sharedApp as3Application) {
 
 	for _, v := range cfg.Monitors {
 		var monitor as3Monitor
@@ -988,4 +1000,29 @@ func createMonitorDecl(cfg *ResourceConfig, sharedApp map[string]interface{}) {
 //Replacing "-" with "_" for given string
 func as3FormatedString(str string) string {
 	return strings.Replace(str, "-", "_", -1)
+}
+
+func createCertificateDecl(prof CustomProfile, sharedApp as3Application) {
+	if "" != prof.Cert && "" != prof.Key {
+		cert := as3Certificate{
+			Class: "Certificate",
+		}
+		cert.Certificate = prof.Cert
+		cert.PrivateKey = prof.Key
+		sharedApp[as3FormatedString(prof.Name)] = cert
+	}
+
+	// sharedApp[virtual].ServerTLS = res.MetaData.RoutPfor["rrsc name, namespace, cxt"]
+}
+
+func createTLSServer(prof CustomProfile, sharedApp as3Application) {
+	if "" != prof.Cert && "" != prof.Key {
+		tlsServ := as3TLSServer{
+			Class:        "TLS_Server",
+			Certificates: []as3TLSServerCertificate{},
+		}
+		tlsServ.Certificates[0].Certificate = as3FormatedString(prof.Name)
+
+		sharedApp["PLACEHOLDER_TLS_SERVER"] = tlsServ
+	}
 }
