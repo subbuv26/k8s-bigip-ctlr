@@ -182,4 +182,15 @@ type (
 	as3TLSServerCertificate struct {
 		Certificate string `json:"certificate,omitempty"`
 	}
+
+	aS3SSLPassthroughServernameDg struct {
+	Records     []as3record `json:"records"`
+	KeyDataType string   `json:"keyDataType"`
+	Class       string   `json:"class"`
+	}
+
+	as3record struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	}
 )
