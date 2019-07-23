@@ -184,13 +184,13 @@ type (
 	}
 
 	aS3SSLPassthroughServernameDg struct {
-	Records     []as3record `json:"records"`
-	KeyDataType string   `json:"keyDataType"`
-	Class       string   `json:"class"`
+		Records     []as3record `json:"records"`
+		KeyDataType string      `json:"keyDataType"`
+		Class       string      `json:"class"`
 	}
 
 	as3record struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
 	}
 )
