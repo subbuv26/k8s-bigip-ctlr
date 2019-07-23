@@ -143,6 +143,7 @@ type (
 		SNAT                   string            `json:"snat,omitempty"`
 		PolicyEndpoint         as3MultiTypeParam `json:"policyEndpoint,omitempty"`
 		ServerTLS              as3MultiTypeParam `json:"serverTLS,omitempty"`
+		IRules                 []string          `json:"iRules,omitempty"`
 	}
 
 	// as3Monitor maps to the following in AS3 Resources
@@ -183,14 +184,20 @@ type (
 		Certificate string `json:"certificate,omitempty"`
 	}
 
-	aS3SSLPassthroughServernameDg struct {
-		Records     []as3record `json:"records"`
+	as3SSLPassthroughServernameDg struct {
+		Records     []as3Record `json:"records"`
 		KeyDataType string      `json:"keyDataType"`
 		Class       string      `json:"class"`
 	}
 
-	as3record struct {
+	as3Record struct {
 		Key   string `json:"key"`
 		Value string `json:"value"`
+	}
+
+	// as3IRules maps to the following in AS3 Resources
+	as3IRules struct {
+		Class string `json:"class,omitempty"`
+		IRule string `json:"iRule,omitempty"`
 	}
 )

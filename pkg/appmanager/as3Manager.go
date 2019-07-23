@@ -773,11 +773,22 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 		createServiceDecl(cfg, sharedApp)
 	}
 
+	//Create data group
+	createDataGroup(appMgr, sharedApp)
+
 	for key, prof := range appMgr.customProfiles.profs {
 		createCertificateDecl(prof, sharedApp)
 		createTLSServer(prof, sharedApp)
 		svc := sharedApp[key.ResourceName].(as3Service)
 		svc.ServerTLS = "PLACEHOLDER_TLS_SERVER"
+	}
+
+	//Create passthrough irule declaration
+	for _, v := range appMgr.irulesMap {
+		var iRule as3IRules
+		iRule.Class = "iRule"
+		iRule.IRule = v.Code
+		sharedApp[as3FormatedString(v.Name)] = iRule
 	}
 
 	// No Policy created, hence no route declaration
@@ -901,6 +912,10 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 	port, _ := strconv.Atoi(ipPort[1])
 	svc.VirtualPort = port
 	svc.SNAT = "auto"
+	for _, v := range cfg.Virtual.IRules {
+		s := strings.Split(v, "/")
+		svc.IRules = append(svc.IRules, as3FormatedString(s[len(s)-1]))
+	}
 
 	sharedApp[as3FormatedString(cfg.Virtual.Name)] = &svc
 }
@@ -985,6 +1000,9 @@ func createMonitorDecl(cfg *ResourceConfig, sharedApp as3Application) {
 			monitor.Adaptive = &adaptiveFalse
 			monitor.Dscp = &val
 			monitor.Receive = "none"
+			if v.Recv != "" {
+				monitor.Receive = v.Recv
+			}
 			monitor.TimeUnitilUp = &val
 			monitor.Send = v.Send
 		case "https":
@@ -1025,4 +1043,23 @@ func createTLSServer(prof CustomProfile, sharedApp as3Application) {
 
 		sharedApp["PLACEHOLDER_TLS_SERVER"] = tlsServ
 	}
+}
+
+func createDataGroup(appMgr *Manager, sharedApp as3Application) {
+
+	for _, idg := range appMgr.intDgMap {
+		for _, dg := range idg {
+			var dgMap as3SSLPassthroughServernameDg
+			dgMap.Class = "Data_Group"
+			dgMap.KeyDataType = "string"
+			for _, record := range dg.Records {
+				var rec as3Record
+				rec.Key = record.Name
+				rec.Value = record.Data
+				dgMap.Records = append(dgMap.Records, rec)
+			}
+			sharedApp[dg.Name] = dgMap
+		}
+	}
+
 }
