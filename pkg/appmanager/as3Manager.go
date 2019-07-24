@@ -777,15 +777,16 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 	createDataGroup(appMgr, sharedApp)
 
 	for key, prof := range appMgr.customProfiles.profs {
-		createCertificateDecl(prof, sharedApp)
-		createTLSServer(prof, sharedApp)
-		svc := sharedApp[key.ResourceName].(as3Service)
-		svc.ServerTLS = "PLACEHOLDER_TLS_SERVER"
+		svc := sharedApp[as3FormatedString(key.ResourceName)].(as3Service)
+		if tlsName := createTLSServer(prof, sharedApp); "" != tlsName {
+			createCertificateDecl(prof, sharedApp)
+			svc.ServerTLS = tlsName
+		}
 	}
 
 	//Create passthrough irule declaration
 	for _, v := range appMgr.irulesMap {
-		var iRule as3IRules
+		iRule := &as3IRules{}
 		iRule.Class = "iRule"
 		iRule.IRule = v.Code
 		sharedApp[as3FormatedString(v.Name)] = iRule
@@ -809,7 +810,7 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 func createPoliciesDecl(cfg *ResourceConfig, sharedApp as3Application) {
 	for _, pl := range cfg.Policies {
 		//Create EndpointPolicy
-		ep := as3EndpointPolicy{}
+		ep := &as3EndpointPolicy{}
 		for _, rl := range pl.Rules {
 
 			ep.Class = "Endpoint_Policy"
@@ -835,7 +836,7 @@ func createPoliciesDecl(cfg *ResourceConfig, sharedApp as3Application) {
 // Create AS3 Pools for Route
 func createPoolDecl(pools Pools, sharedApp as3Application) {
 	for _, v := range pools {
-		var pool as3Pool
+		pool := &as3Pool{}
 		pool.LoadBalancingMode = v.Balance
 		pool.Class = "Pool"
 		for _, val := range v.Members {
@@ -861,7 +862,7 @@ func createPoolDecl(pools Pools, sharedApp as3Application) {
 
 // Create AS3 Service for Route
 func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
-	var svc as3Service
+	svc := &as3Service{}
 
 	if len(cfg.Virtual.Policies) == 1 {
 		svc.PolicyEndpoint = fmt.Sprintf("/%s/%s/%s",
@@ -917,7 +918,7 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 		svc.IRules = append(svc.IRules, as3FormatedString(s[len(s)-1]))
 	}
 
-	sharedApp[as3FormatedString(cfg.Virtual.Name)] = &svc
+	sharedApp[as3FormatedString(cfg.Virtual.Name)] = svc
 }
 
 // Create AS3 Rule Condition for Route
@@ -984,7 +985,7 @@ func createRouteRuleAction(rl *Rule, rulesData *as3Rule) {
 func createMonitorDecl(cfg *ResourceConfig, sharedApp as3Application) {
 
 	for _, v := range cfg.Monitors {
-		var monitor as3Monitor
+		monitor := &as3Monitor{}
 		monitor.Class = "Monitor"
 		monitor.Interval = v.Interval
 		monitor.MonitorType = v.Type
@@ -1022,34 +1023,42 @@ func as3FormatedString(str string) string {
 
 func createCertificateDecl(prof CustomProfile, sharedApp as3Application) {
 	if "" != prof.Cert && "" != prof.Key {
-		cert := as3Certificate{
+		cert := &as3Certificate{
 			Class: "Certificate",
 		}
 		cert.Certificate = prof.Cert
 		cert.PrivateKey = prof.Key
 		sharedApp[as3FormatedString(prof.Name)] = cert
 	}
-
-	// sharedApp[virtual].ServerTLS = res.MetaData.RoutPfor["rrsc name, namespace, cxt"]
 }
 
-func createTLSServer(prof CustomProfile, sharedApp as3Application) {
+func createTLSServer(prof CustomProfile, sharedApp as3Application) string {
 	if "" != prof.Cert && "" != prof.Key {
-		tlsServ := as3TLSServer{
+		tlsServer := &as3TLSServer{
 			Class:        "TLS_Server",
 			Certificates: []as3TLSServerCertificate{},
 		}
-		tlsServ.Certificates[0].Certificate = as3FormatedString(prof.Name)
 
-		sharedApp["PLACEHOLDER_TLS_SERVER"] = tlsServ
+		certName := as3FormatedString(prof.Name)
+		tlsServer.Certificates = append(
+			tlsServer.Certificates,
+			as3TLSServerCertificate{
+				Certificate: certName,
+			},
+		)
+		tlsServerName := fmt.Sprintf("%s_tls_server", certName[:len(certName)-11])
+		sharedApp[tlsServerName] = tlsServer
+
+		return tlsServerName
 	}
+	return ""
 }
 
 func createDataGroup(appMgr *Manager, sharedApp as3Application) {
 
 	for _, idg := range appMgr.intDgMap {
 		for _, dg := range idg {
-			var dgMap as3SSLPassthroughServernameDg
+			dgMap := &as3SSLPassthroughServernameDg{}
 			dgMap.Class = "Data_Group"
 			dgMap.KeyDataType = "string"
 			for _, record := range dg.Records {
