@@ -776,12 +776,19 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 	//Create data group
 	createDataGroup(appMgr, sharedApp)
 
+	// Process CustomProfiles
+	// TLS Certificates are available in CustomProfiles
 	for key, prof := range appMgr.customProfiles.profs {
+		// Create TLSServer and Certificate for each profile
 		svc := sharedApp[as3FormatedString(key.ResourceName)].(as3Service)
 		if tlsName := createTLSServer(prof, sharedApp); "" != tlsName {
+			// Create Certificate only if the corresponding TLSServer got created
 			createCertificateDecl(prof, sharedApp)
 			svc.ServerTLS = tlsName
 		}
+
+		// Override/Set TLS server in AS3 Service as annotation takes higher priority
+		appMgr.setTLSRouteAnnotation(prof, sharedApp)
 	}
 
 	//Create passthrough irule declaration
@@ -1071,4 +1078,18 @@ func createDataGroup(appMgr *Manager, sharedApp as3Application) {
 		}
 	}
 
+}
+
+func (appMgr *Manager) setTLSRouteAnnotation(prof CustomProfile, sharedApp as3Application) {
+	for _, cfg := range appMgr.resources.GetAllResources() {
+		rk := routeKey{
+			Name:      prof.Name,
+			Namespace: cfg.Virtual.Profiles[0].Namespace,
+			Context:   prof.Context,
+		}
+		if rp, ok := cfg.MetaData.RouteProfs[rk]; ok {
+			svc := sharedApp[as3FormatedString(cfg.Virtual.Name)].(as3Service)
+			svc.ServerTLS = rp
+		}
+	}
 }
