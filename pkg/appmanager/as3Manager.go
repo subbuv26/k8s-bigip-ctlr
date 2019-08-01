@@ -735,74 +735,35 @@ func (appMgr *Manager) getUnifiedAS3Declaration() as3Declaration {
 }
 
 func (appMgr *Manager) postRouteDeclarationHost() {
-	if adc, ok := appMgr.generateAS3RouteDeclaration(); ok {
-		log.Debugf("as3_log route shared json: %v", adc)
-		appMgr.as3RouteCfg = adc
-		//Get unified declaration
-		unifiedDecl := appMgr.getUnifiedAS3Declaration()
-		appMgr.postAS3Declaration(unifiedDecl)
-	}
+	adc := appMgr.generateAS3RouteDeclaration()
+	log.Debugf("as3_log route shared json: %v", adc)
+	appMgr.as3RouteCfg = adc
+	//Get unified declaration
+	unifiedDecl := appMgr.getUnifiedAS3Declaration()
+	appMgr.postAS3Declaration(unifiedDecl)
 }
 
-func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
-	var policyCreated bool
+func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
 	// Create Shared as3Application object
 	sharedApp := as3Application{}
 	sharedApp["class"] = "Application"
 	sharedApp["template"] = "shared"
-	for _, cfg := range appMgr.resources.GetAllResources() {
-		//Process only route data
 
-		if len(cfg.Virtual.Policies) != 0 {
-			if BigIPPartition == "" {
-				BigIPPartition = cfg.Virtual.Policies[0].Partition + "_AS3"
-			}
-			policyCreated = true
-		}
+	// TODO: Need to move this method so that it gets called only once.
+	appMgr.setAS3BigIPPartition()
 
-		//Create policies
-		createPoliciesDecl(cfg, sharedApp)
+	// Process CIS Resources to create AS3 Resources
+	appMgr.processResourcesForAS3(sharedApp)
 
-		//Create health monitor declaration
-		createMonitorDecl(cfg, sharedApp)
-
-		//Create pools
-		createPoolDecl(cfg.Pools, sharedApp)
-
-		//Create AS3 Service for virtual server
-		createServiceDecl(cfg, sharedApp)
-	}
-
-	//Create data group
-	createDataGroup(appMgr, sharedApp)
+	// Process DataGroup to be consumed by IRule
+	appMgr.processDataGroupForAS3(sharedApp)
 
 	// Process CustomProfiles
-	// TLS Certificates are available in CustomProfiles
-	for key, prof := range appMgr.customProfiles.profs {
-		// Create TLSServer and Certificate for each profile
-		svc := sharedApp[as3FormatedString(key.ResourceName)].(as3Service)
-		if tlsName := createTLSServer(prof, sharedApp); "" != tlsName {
-			// Create Certificate only if the corresponding TLSServer got created
-			createCertificateDecl(prof, sharedApp)
-			svc.ServerTLS = tlsName
-		}
+	appMgr.processCustomeProfilesForAS3(sharedApp)
 
-		// Override/Set TLS server in AS3 Service as annotation takes higher priority
-		appMgr.setTLSRouteAnnotation(prof, sharedApp)
-	}
+	// Process IRules
+	appMgr.processIRulesForAS3(sharedApp)
 
-	//Create passthrough irule declaration
-	for _, v := range appMgr.irulesMap {
-		iRule := &as3IRules{}
-		iRule.Class = "iRule"
-		iRule.IRule = v.Code
-		sharedApp[as3FormatedString(v.Name)] = iRule
-	}
-
-	// No Policy created, hence no route declaration
-	if !policyCreated {
-		return nil, false
-	}
 	// Create AS3 Tenant
 	tenant := as3Tenant{
 		"class":              "Tenant",
@@ -811,7 +772,87 @@ func (appMgr *Manager) generateAS3RouteDeclaration() (as3ADC, bool) {
 	as3JSONDecl := as3ADC{
 		BigIPPartition: tenant,
 	}
-	return as3JSONDecl, true
+	return as3JSONDecl
+}
+
+func (appMgr *Manager) setAS3BigIPPartition() {
+	if BigIPPartition != "" {
+		return
+	}
+	for _, cfg := range appMgr.resources.GetAllResources() {
+		if len(cfg.Virtual.Policies) != 0 {
+			BigIPPartition = cfg.Virtual.Policies[0].Partition + "_AS3"
+			break
+		}
+	}
+}
+
+func (appMgr *Manager) processResourcesForAS3(sharedApp as3Application) {
+	for _, cfg := range appMgr.resources.GetAllResources() {
+		//Create policies
+		createPoliciesDecl(cfg, sharedApp)
+
+		//Create health monitor declaration
+		createMonitorDecl(cfg, sharedApp)
+
+		//Create pools
+		createPoolDecl(cfg, sharedApp)
+
+		//Create AS3 Service for virtual server
+		createServiceDecl(cfg, sharedApp)
+	}
+}
+
+func (appMgr *Manager) processIRulesForAS3(sharedApp as3Application) {
+	// Create passthrough irule declaration
+	for _, v := range appMgr.irulesMap {
+		iRule := &as3IRules{}
+		iRule.Class = "iRule"
+		iRule.IRule = v.Code
+		sharedApp[as3FormatedString(v.Name)] = iRule
+	}
+}
+
+func (appMgr *Manager) processCustomeProfilesForAS3(sharedApp as3Application) {
+	caBundleName := "serverssl_ca_bundle"
+	clientTLSCreated := false
+	// TLS Certificates are available in CustomProfiles
+	for key, prof := range appMgr.customProfiles.profs {
+		// Create TLSServer and Certificate for each profile
+		svcName := as3FormatedString(key.ResourceName)
+		if svcName == "" {
+			continue
+		}
+		if ok := createUpdateTLSServer(prof, svcName, sharedApp); ok {
+			// Create Certificate only if the corresponding TLSServer got created
+			createCertificateDecl(prof, sharedApp)
+		} else {
+			createUpdateCABundle(prof, caBundleName, sharedApp)
+			if !clientTLSCreated {
+				clientTLSCreated = createTLSClient(prof, svcName, caBundleName, sharedApp)
+			}
+		}
+
+		// Override/Set TLS server in AS3 Service as annotation takes higher priority
+		appMgr.setTLSRouteAnnotation(prof, sharedApp)
+	}
+}
+
+func (appMgr *Manager) processDataGroupForAS3(sharedApp as3Application) {
+	for _, idg := range appMgr.intDgMap {
+		for _, dg := range idg {
+			dgMap := &as3SSLPassthroughServernameDg{}
+			dgMap.Class = "Data_Group"
+			dgMap.KeyDataType = "string"
+			for _, record := range dg.Records {
+				var rec as3Record
+				rec.Key = record.Name
+				rec.Value = record.Data
+				dgMap.Records = append(dgMap.Records, rec)
+			}
+			sharedApp[dg.Name] = dgMap
+		}
+	}
 }
 
 func createPoliciesDecl(cfg *ResourceConfig, sharedApp as3Application) {
@@ -841,8 +882,8 @@ func createPoliciesDecl(cfg *ResourceConfig, sharedApp as3Application) {
 }
 
 // Create AS3 Pools for Route
-func createPoolDecl(pools Pools, sharedApp as3Application) {
-	for _, v := range pools {
+func createPoolDecl(cfg *ResourceConfig, sharedApp as3Application) {
+	for _, v := range cfg.Pools {
 		pool := &as3Pool{}
 		pool.LoadBalancingMode = v.Balance
 		pool.Class = "Pool"
@@ -867,8 +908,22 @@ func createPoolDecl(pools Pools, sharedApp as3Application) {
 	}
 }
 
+func isSecuredVirtualServer(policies []nameRef) bool {
+	for _, p := range policies {
+		if p.Name == "openshift_secure_routes" {
+			return true
+		}
+	}
+	return false
+}
+
 // Create AS3 Service for Route
 func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
+	// Check whether AS3 Service has Pool or Policy
+	// An AS3 Service without Pool or Policy is not a useful declaration
+	if len(cfg.Virtual.Policies) == 0 && "" == cfg.Virtual.PoolName {
+		return
+	}
 	svc := &as3Service{}
 
 	if len(cfg.Virtual.Policies) == 1 {
@@ -898,7 +953,14 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 	svc.Source = "0.0.0.0/0"
 	svc.TranslateServerAddress = true
 	svc.TranslateServerPort = true
-	svc.Class = "Service_HTTP"
+
+	if isSecuredVirtualServer(cfg.Virtual.Policies) {
+		svc.Class = "Service_HTTPS"
+		redirect80 := false
+		svc.Redirect80 = &redirect80
+	} else {
+		svc.Class = "Service_HTTP"
+	}
 
 	for _, prof := range cfg.Virtual.Profiles {
 		switch prof.Name {
@@ -1028,56 +1090,82 @@ func as3FormatedString(str string) string {
 	return strings.Replace(str, "-", "_", -1)
 }
 
+func createUpdateCABundle(prof CustomProfile, caBundleName string, sharedApp as3Application) {
+	// For TLSClient only Cert (DestinationCACertificate) is given and key is empty string
+	if "" != prof.Cert && "" == prof.Key {
+		caBundle, ok := sharedApp[caBundleName].(*as3CABundle)
+
+		if !ok {
+			caBundle = &as3CABundle{
+				Class:  "CA_Bundle",
+				Bundle: "",
+			}
+			sharedApp[caBundleName] = caBundle
+		}
+		caBundle.Bundle += "\n" + prof.Cert
+	}
+}
+
 func createCertificateDecl(prof CustomProfile, sharedApp as3Application) {
 	if "" != prof.Cert && "" != prof.Key {
 		cert := &as3Certificate{
-			Class: "Certificate",
+			Class:       "Certificate",
+			Certificate: prof.Cert,
+			PrivateKey:  prof.Key,
+			ChainCA:     prof.CAFile,
 		}
-		cert.Certificate = prof.Cert
-		cert.PrivateKey = prof.Key
+
 		sharedApp[as3FormatedString(prof.Name)] = cert
 	}
 }
 
-func createTLSServer(prof CustomProfile, sharedApp as3Application) string {
+func createUpdateTLSServer(prof CustomProfile, svcName string, sharedApp as3Application) bool {
 	if "" != prof.Cert && "" != prof.Key {
-		tlsServer := &as3TLSServer{
-			Class:        "TLS_Server",
-			Certificates: []as3TLSServerCertificate{},
+		svc := sharedApp[svcName].(*as3Service)
+		tlsServerName := fmt.Sprintf("%s_tls_server", svcName)
+		certName := as3FormatedString(prof.Name)
+
+		tlsServer, ok := sharedApp[tlsServerName].(*as3TLSServer)
+		if !ok {
+			tlsServer = &as3TLSServer{
+				Class:        "TLS_Server",
+				Certificates: []as3TLSServerCertificates{},
+			}
+
+			sharedApp[tlsServerName] = tlsServer
+			svc.ServerTLS = tlsServerName
 		}
 
-		certName := as3FormatedString(prof.Name)
 		tlsServer.Certificates = append(
 			tlsServer.Certificates,
-			as3TLSServerCertificate{
+			as3TLSServerCertificates{
 				Certificate: certName,
 			},
 		)
-		tlsServerName := fmt.Sprintf("%s_tls_server", certName[:len(certName)-11])
-		sharedApp[tlsServerName] = tlsServer
-
-		return tlsServerName
+		return true
 	}
-	return ""
+	return false
 }
 
-func createDataGroup(appMgr *Manager, sharedApp as3Application) {
+func createTLSClient(prof CustomProfile, svcName, caBundleName string, sharedApp as3Application) bool {
+	// For TLSClient only Cert (DestinationCACertificate) is given and key is empty string
+	if "" != prof.Cert && "" == prof.Key {
+		svc := sharedApp[svcName].(*as3Service)
+		tlsClientName := fmt.Sprintf("%s_tls_client", svcName)
 
-	for _, idg := range appMgr.intDgMap {
-		for _, dg := range idg {
-			dgMap := &as3SSLPassthroughServernameDg{}
-			dgMap.Class = "Data_Group"
-			dgMap.KeyDataType = "string"
-			for _, record := range dg.Records {
-				var rec as3Record
-				rec.Key = record.Name
-				rec.Value = record.Data
-				dgMap.Records = append(dgMap.Records, rec)
-			}
-			sharedApp[dg.Name] = dgMap
+		tlsClient := &as3TLSClient{
+			Class:               "TLS_Client",
+			ValidateCertificate: true,
 		}
-	}
+		tlsClient.TrustCA = &as3ResourcePointer{
+			Use: caBundleName,
+		}
+		sharedApp[tlsClientName] = tlsClient
+		svc.ClientTLS = tlsClientName
 
+		return true
+	}
+	return false
 }
 
 func (appMgr *Manager) setTLSRouteAnnotation(prof CustomProfile, sharedApp as3Application) {
@@ -1088,8 +1176,20 @@ func (appMgr *Manager) setTLSRouteAnnotation(prof CustomProfile, sharedApp as3Ap
 			Context:   prof.Context,
 		}
 		if rp, ok := cfg.MetaData.RouteProfs[rk]; ok {
-			svc := sharedApp[as3FormatedString(cfg.Virtual.Name)].(as3Service)
-			svc.ServerTLS = rp
+			svc := sharedApp[as3FormatedString(cfg.Virtual.Name)].(*as3Service)
+			if prof.Context == customProfileClient {
+				// Incoming traffic (clientssl) from a web client will be handled by ServerTLS in AS3
+				svc.ServerTLS = &as3ResourcePointer{
+					BigIP: rp,
+				}
+			} else if prof.Context == customProfileServer {
+				// Outgoing traffic (serverssl) to BackEnd Servers from BigIP will be handled by ClientTLS in AS3
+				svc.ClientTLS = &as3ResourcePointer{
+					BigIP: rp,
+				}
+			} else {
+				// TODO: Handle case customProfileAll
+			}
 		}
 	}
 }

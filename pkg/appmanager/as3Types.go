@@ -142,8 +142,10 @@ type (
 		VirtualPort            int               `json:"virtualPort,omitempty"`
 		SNAT                   string            `json:"snat,omitempty"`
 		PolicyEndpoint         as3MultiTypeParam `json:"policyEndpoint,omitempty"`
+		ClientTLS              as3MultiTypeParam `json:"clientTLS,omitempty"`
 		ServerTLS              as3MultiTypeParam `json:"serverTLS,omitempty"`
 		IRules                 []string          `json:"iRules,omitempty"`
+		Redirect80             *bool             `json:"redirect80,omitempty"`
 	}
 
 	// as3Monitor maps to the following in AS3 Resources
@@ -166,22 +168,36 @@ type (
 		Ciphers           string  `json:"ciphers,omitempty"`
 	}
 
+	// as3CABundle maps to CA_Bundle in AS3 Resources
+	as3CABundle struct {
+		Class  string `json:"class,omitempty"`
+		Bundle string `json:"bundle,omitempty"`
+	}
+
 	// as3Certificate maps to Certificate in AS3 Resources
 	as3Certificate struct {
 		Class       string            `json:"class,omitempty"`
 		Certificate as3MultiTypeParam `json:"certificate,omitempty"`
 		PrivateKey  as3MultiTypeParam `json:"privateKey,omitempty"`
+		ChainCA     as3MultiTypeParam `json:"chainCA,omitempty"`
 	}
 
 	// as3TLSServer maps to TLS_Server in AS3 Resources
 	as3TLSServer struct {
-		Class        string                    `json:"class,omitempty"`
-		Certificates []as3TLSServerCertificate `json:"certificates,omitempty"`
+		Class        string                     `json:"class,omitempty"`
+		Certificates []as3TLSServerCertificates `json:"certificates,omitempty"`
 	}
 
 	// as3TLSServerCertificates maps to TLS_Server_certificates in AS3 Resources
-	as3TLSServerCertificate struct {
+	as3TLSServerCertificates struct {
 		Certificate string `json:"certificate,omitempty"`
+	}
+
+	// as3TLSClient maps to TLS_Client in AS3 Resources
+	as3TLSClient struct {
+		Class               string              `json:"class,omitempty"`
+		TrustCA             *as3ResourcePointer `json:"trustCA,omitempty"`
+		ValidateCertificate bool                `json:"validateCertificate,omitempty"`
 	}
 
 	as3SSLPassthroughServernameDg struct {
