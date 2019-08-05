@@ -585,6 +585,9 @@ func main() {
 	log.Infof("Starting: Version: %s, BuildInfo: %s", version, buildInfo)
 
 	appmanager.DEFAULT_PARTITION = (*bigIPPartitions)[0]
+	if *agent == "as3" {
+		appmanager.DEFAULT_PARTITION += "_AS3"
+	}
 	appmanager.RegisterBigIPSchemaTypes()
 
 	if _, isSet := os.LookupEnv("SCALE_PERF_ENABLE"); isSet {

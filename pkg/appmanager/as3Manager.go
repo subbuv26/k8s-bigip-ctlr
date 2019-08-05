@@ -58,7 +58,6 @@ const (
 	as3SharedApplication = "Shared"
 )
 
-var BigIPPartition string
 var BigIPUsername string
 var BigIPPassword string
 var BigIPURL string
@@ -749,9 +748,6 @@ func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
 	sharedApp["class"] = "Application"
 	sharedApp["template"] = "shared"
 
-	// TODO: Need to move this method so that it gets called only once.
-	appMgr.setAS3BigIPPartition()
-
 	// Process CIS Resources to create AS3 Resources
 	appMgr.processResourcesForAS3(sharedApp)
 
@@ -770,21 +766,9 @@ func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
 		as3SharedApplication: sharedApp,
 	}
 	as3JSONDecl := as3ADC{
-		BigIPPartition: tenant,
+		DEFAULT_PARTITION: tenant,
 	}
 	return as3JSONDecl
-}
-
-func (appMgr *Manager) setAS3BigIPPartition() {
-	if BigIPPartition != "" {
-		return
-	}
-	for _, cfg := range appMgr.resources.GetAllResources() {
-		if len(cfg.Virtual.Policies) != 0 {
-			BigIPPartition = cfg.Virtual.Policies[0].Partition + "_AS3"
-			break
-		}
-	}
 }
 
 func (appMgr *Manager) processResourcesForAS3(sharedApp as3Application) {
@@ -847,10 +831,10 @@ func (appMgr *Manager) processDataGroupForAS3(sharedApp as3Application) {
 			for _, record := range dg.Records {
 				var rec as3Record
 				rec.Key = record.Name
-				rec.Value = record.Data
+				rec.Value = as3FormatedString(record.Data)
 				dgMap.Records = append(dgMap.Records, rec)
 			}
-			sharedApp[dg.Name] = dgMap
+			sharedApp[as3FormatedString(dg.Name)] = dgMap
 		}
 	}
 }
@@ -898,7 +882,7 @@ func createPoolDecl(cfg *ResourceConfig, sharedApp as3Application) {
 			var monitor as3ResourcePointer
 			use := strings.Split(val, "/")
 			monitor.Use = fmt.Sprintf("/%s/%s/%s",
-				BigIPPartition,
+				DEFAULT_PARTITION,
 				as3SharedApplication,
 				as3FormatedString(use[2]),
 			)
@@ -919,16 +903,11 @@ func isSecuredVirtualServer(policies []nameRef) bool {
 
 // Create AS3 Service for Route
 func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
-	// Check whether AS3 Service has Pool or Policy
-	// An AS3 Service without Pool or Policy is not a useful declaration
-	if len(cfg.Virtual.Policies) == 0 && "" == cfg.Virtual.PoolName {
-		return
-	}
 	svc := &as3Service{}
 
 	if len(cfg.Virtual.Policies) == 1 {
 		svc.PolicyEndpoint = fmt.Sprintf("/%s/%s/%s",
-			BigIPPartition,
+			DEFAULT_PARTITION,
 			as3SharedApplication,
 			cfg.Virtual.Policies[0].Name,
 		)
@@ -939,7 +918,7 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 				peps,
 				as3ResourcePointer{
 					BigIP: fmt.Sprintf("/%s/%s/%s",
-						BigIPPartition,
+						DEFAULT_PARTITION,
 						as3SharedApplication,
 						pep.Name,
 					),
