@@ -757,6 +757,9 @@ func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
 	// Process CustomProfiles
 	appMgr.processCustomeProfilesForAS3(sharedApp)
 
+	// Process RouteProfiles
+	appMgr.processRouteProfilesForAS3(sharedApp)
+
 	// Process IRules
 	appMgr.processIRulesForAS3(sharedApp)
 
@@ -816,9 +819,31 @@ func (appMgr *Manager) processCustomeProfilesForAS3(sharedApp as3Application) {
 				clientTLSCreated = createTLSClient(prof, svcName, caBundleName, sharedApp)
 			}
 		}
+	}
+}
 
-		// Override/Set TLS server in AS3 Service as annotation takes higher priority
-		appMgr.setTLSRouteAnnotation(prof, sharedApp)
+func (appMgr *Manager) processRouteProfilesForAS3(sharedApp as3Application) {
+	// Processes RouteProfs to create AS3 Declaration for Route annotations
+	// Override/Set ServerTLS/ClientTLS in AS3 Service as annotation takes higher priority
+
+	for svcName, cfg := range appMgr.resources.rsMap {
+		svc, ok := sharedApp[as3FormatedString(svcName)].(*as3Service)
+		if !ok {
+			continue
+		}
+		for key, val := range cfg.MetaData.RouteProfs {
+			if key.Context == customProfileClient {
+				// Incoming traffic (clientssl) from a web client will be handled by ServerTLS in AS3
+				svc.ServerTLS = &as3ResourcePointer{
+					BigIP: val,
+				}
+			} else if key.Context == customProfileServer {
+				// Outgoing traffic (serverssl) to BackEnd Servers from BigIP will be handled by ClientTLS in AS3
+				svc.ClientTLS = &as3ResourcePointer{
+					BigIP: val,
+				}
+			}
+		}
 	}
 }
 
@@ -1145,30 +1170,4 @@ func createTLSClient(prof CustomProfile, svcName, caBundleName string, sharedApp
 		return true
 	}
 	return false
-}
-
-func (appMgr *Manager) setTLSRouteAnnotation(prof CustomProfile, sharedApp as3Application) {
-	for _, cfg := range appMgr.resources.GetAllResources() {
-		rk := routeKey{
-			Name:      prof.Name,
-			Namespace: cfg.Virtual.Profiles[0].Namespace,
-			Context:   prof.Context,
-		}
-		if rp, ok := cfg.MetaData.RouteProfs[rk]; ok {
-			svc := sharedApp[as3FormatedString(cfg.Virtual.Name)].(*as3Service)
-			if prof.Context == customProfileClient {
-				// Incoming traffic (clientssl) from a web client will be handled by ServerTLS in AS3
-				svc.ServerTLS = &as3ResourcePointer{
-					BigIP: rp,
-				}
-			} else if prof.Context == customProfileServer {
-				// Outgoing traffic (serverssl) to BackEnd Servers from BigIP will be handled by ClientTLS in AS3
-				svc.ClientTLS = &as3ResourcePointer{
-					BigIP: rp,
-				}
-			} else {
-				// TODO: Handle case customProfileAll
-			}
-		}
-	}
 }
