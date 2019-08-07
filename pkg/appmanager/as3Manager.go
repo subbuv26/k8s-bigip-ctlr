@@ -816,7 +816,14 @@ func (appMgr *Manager) processCustomeProfilesForAS3(sharedApp as3Application) {
 		} else {
 			createUpdateCABundle(prof, caBundleName, sharedApp)
 			if !clientTLSCreated {
-				clientTLSCreated = createTLSClient(prof, svcName, caBundleName, sharedApp)
+				validateCertificate := false
+				skey := secretKey{
+					Name: prof.Name + "-ca",
+				}
+				if _, ok := appMgr.customProfiles.profs[skey]; ok {
+					validateCertificate = true
+				}
+				clientTLSCreated = createTLSClient(prof, svcName, caBundleName, validateCertificate, sharedApp)
 			}
 		}
 	}
@@ -1151,7 +1158,12 @@ func createUpdateTLSServer(prof CustomProfile, svcName string, sharedApp as3Appl
 	return false
 }
 
-func createTLSClient(prof CustomProfile, svcName, caBundleName string, sharedApp as3Application) bool {
+func createTLSClient(
+	prof CustomProfile,
+	svcName, caBundleName string,
+	validateCertificate bool,
+	sharedApp as3Application,
+	) bool {
 	// For TLSClient only Cert (DestinationCACertificate) is given and key is empty string
 	if "" != prof.Cert && "" == prof.Key {
 		svc := sharedApp[svcName].(*as3Service)
@@ -1159,7 +1171,7 @@ func createTLSClient(prof CustomProfile, svcName, caBundleName string, sharedApp
 
 		tlsClient := &as3TLSClient{
 			Class:               "TLS_Client",
-			ValidateCertificate: true,
+			ValidateCertificate: validateCertificate,
 		}
 		tlsClient.TrustCA = &as3ResourcePointer{
 			Use: caBundleName,
