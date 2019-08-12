@@ -214,7 +214,11 @@ func (appMgr *Manager) getAS3ObjectFromTemplate(
 }
 
 func getClass(obj interface{}) string {
-	cfg := obj.(map[string]interface{})
+	cfg, ok := obj.(as3JSONWithArbKeys)
+	if !ok {
+		// If not a json object it doesn't have class attribute
+		return ""
+	}
 	cl, ok := cfg["class"].(string)
 	if !ok {
 		log.Debugf("No class attribute found")
@@ -746,17 +750,17 @@ func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
 	// Process CIS Resources to create AS3 Resources
 	appMgr.processResourcesForAS3(sharedApp)
 
-	// Process DataGroup to be consumed by IRule
-	appMgr.processDataGroupForAS3(sharedApp)
-
 	// Process CustomProfiles
-	appMgr.processCustomeProfilesForAS3(sharedApp)
+	appMgr.processCustomProfilesForAS3(sharedApp)
 
 	// Process RouteProfiles
 	appMgr.processRouteProfilesForAS3(sharedApp)
 
 	// Process IRules
 	appMgr.processIRulesForAS3(sharedApp)
+
+	// Process DataGroup to be consumed by IRule
+	appMgr.processDataGroupForAS3(sharedApp)
 
 	// Create AS3 Tenant
 	tenant := as3Tenant{
@@ -786,7 +790,7 @@ func (appMgr *Manager) processResourcesForAS3(sharedApp as3Application) {
 }
 
 func (appMgr *Manager) processIRulesForAS3(sharedApp as3Application) {
-	// Create passthrough irule declaration
+	// Create irule declaration
 	for _, v := range appMgr.irulesMap {
 		iRule := &as3IRules{}
 		iRule.Class = "iRule"
@@ -795,7 +799,45 @@ func (appMgr *Manager) processIRulesForAS3(sharedApp as3Application) {
 	}
 }
 
-func (appMgr *Manager) processCustomeProfilesForAS3(sharedApp as3Application) {
+func (appMgr *Manager) processDataGroupForAS3(sharedApp as3Application) {
+	for idk, idg := range appMgr.intDgMap {
+		for _, dg := range idg {
+			dgMap := &as3DataGroup{}
+			dgMap.Class = "Data_Group"
+			dgMap.KeyDataType = "string"
+
+			for _, record := range dg.Records {
+				var rec as3Record
+				rec.Key = record.Name
+				// To override default Value created for CCCL for certain DG types
+				if val, ok := getDGRecordValueForAS3(idk.Name, sharedApp); ok {
+					rec.Value = val
+				} else {
+					rec.Value = as3FormatedString(record.Data)
+				}
+				dgMap.Records = append(dgMap.Records, rec)
+			}
+			sharedApp[as3FormatedString(dg.Name)] = dgMap
+		}
+	}
+}
+
+func getDGRecordValueForAS3(dgName string, sharedApp as3Application) (string, bool) {
+	switch dgName {
+	case reencryptServerSslDgName:
+		for _, v := range sharedApp {
+			if svc, ok := v.(*as3Service); ok && svc.Class == "Service_HTTPS" {
+				if val, ok := svc.ClientTLS.(*as3ResourcePointer); ok {
+					return val.BigIP, true
+				}
+				return strings.Join([]string{"", DEFAULT_PARTITION, as3SharedApplication, svc.ClientTLS.(string)}, "/"), true
+			}
+		}
+	}
+	return "", false
+}
+
+func (appMgr *Manager) processCustomProfilesForAS3(sharedApp as3Application) {
 	caBundleName := "serverssl_ca_bundle"
 	clientTLSCreated := false
 	// TLS Certificates are available in CustomProfiles
@@ -845,23 +887,6 @@ func (appMgr *Manager) processRouteProfilesForAS3(sharedApp as3Application) {
 					BigIP: val,
 				}
 			}
-		}
-	}
-}
-
-func (appMgr *Manager) processDataGroupForAS3(sharedApp as3Application) {
-	for _, idg := range appMgr.intDgMap {
-		for _, dg := range idg {
-			dgMap := &as3SSLPassthroughServernameDg{}
-			dgMap.Class = "Data_Group"
-			dgMap.KeyDataType = "string"
-			for _, record := range dg.Records {
-				var rec as3Record
-				rec.Key = record.Name
-				rec.Value = as3FormatedString(record.Data)
-				dgMap.Records = append(dgMap.Records, rec)
-			}
-			sharedApp[as3FormatedString(dg.Name)] = dgMap
 		}
 	}
 }

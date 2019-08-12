@@ -200,12 +200,14 @@ type (
 		ValidateCertificate bool                `json:"validateCertificate,omitempty"`
 	}
 
-	as3SSLPassthroughServernameDg struct {
+	// as3DataGroup maps to Data_Group in AS3 Resources
+	as3DataGroup struct {
 		Records     []as3Record `json:"records"`
 		KeyDataType string      `json:"keyDataType"`
 		Class       string      `json:"class"`
 	}
 
+	// as3Record maps to Data_Group_*records in AS3 Resources
 	as3Record struct {
 		Key   string `json:"key"`
 		Value string `json:"value"`
