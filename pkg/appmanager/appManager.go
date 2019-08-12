@@ -839,7 +839,6 @@ func (appMgr *Manager) processNextVirtualServer() bool {
 	if len(k.AS3Name) != 0 {
 
 		appMgr.activeCfgMap.Name = k.AS3Name
-		appMgr.activeCfgMap.Data = k.AS3Data
 		log.Debugf("[as3_log] Active ConfigMap: (%s)\n", appMgr.activeCfgMap.Name)
 
 		appMgr.vsQueue.Done(key)

@@ -669,6 +669,7 @@ func main() {
 	appmanager.BigIPUsername = *bigIPUsername
 	appmanager.BigIPPassword = *bigIPPassword
 	appmanager.BigIPURL = *bigIPURL
+	appmanager.BigIPPartitions = *bigIPPartitions
 
 	subPidCh, err := startPythonDriver(configWriter, gs, bs, *pythonBaseDir)
 	if nil != err {
@@ -713,6 +714,8 @@ func main() {
 	}
 
 	appMgr := appmanager.NewManager(&appMgrParms)
+	//Delete as3 managed partitioned configurations when switching back to agent cccl from as3
+	appMgr.DeleteAs3ManagedConfiguration()
 
 	intervalFactor := time.Duration(*nodePollInterval)
 	np := pollers.NewNodePoller(appMgrParms.KubeClient, intervalFactor*time.Second, *nodeLabelSelector)

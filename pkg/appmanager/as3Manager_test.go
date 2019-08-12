@@ -226,7 +226,7 @@ var _ = Describe("AS3Manager Tests", func() {
 			Expect(err).To(BeNil(), "Config should be json")
 			mockMgr.appMgr.activeCfgMap.Data = string(data)
 
-			result := mockMgr.appMgr.getUnifiedAS3Declaration()
+			result, _ := mockMgr.appMgr.getUnifiedAS3Declaration(as3Declaration(mockMgr.appMgr.activeCfgMap.Data), nil)
 
 			err = json.Unmarshal([]byte(result), &generatedCfg)
 			Expect(err).To(BeNil(), "Failed to Create Valid JSON")
@@ -246,7 +246,7 @@ var _ = Describe("AS3Manager Tests", func() {
 			Expect(err).To(BeNil(), "Route Config should be json")
 			mockMgr.appMgr.as3RouteCfg = cfg
 
-			result := mockMgr.appMgr.getUnifiedAS3Declaration()
+			result, _ := mockMgr.appMgr.getUnifiedAS3Declaration("", mockMgr.appMgr.as3RouteCfg)
 
 			err = json.Unmarshal([]byte(result), &generatedCfg)
 			Expect(err).To(BeNil(), "Failed to Create Valid JSON")
@@ -265,38 +265,14 @@ var _ = Describe("AS3Manager Tests", func() {
 			err = json.Unmarshal([]byte(data), &userCfg)
 			Expect(err).To(BeNil(), "Config should be json")
 			mockMgr.appMgr.activeCfgMap.Data = string(data)
+		// appMgr.activeCfgMap.Data = k.AS3Data
 
 			data = readConfigFile(configPath + "as3_route.json")
 			err = json.Unmarshal([]byte(data), &cfg)
 			Expect(err).To(BeNil(), "Route Config should be json")
 			mockMgr.appMgr.as3RouteCfg = cfg
 
-			result := mockMgr.appMgr.getUnifiedAS3Declaration()
-
-			err = json.Unmarshal([]byte(result), &generatedCfg)
-			Expect(err).To(BeNil(), "Failed to Create Valid JSON")
-
-			Expect(reflect.DeepEqual(origCfg, generatedCfg)).To(BeTrue(), "Failed to Create JSON with correct configuration")
-		})
-		It("Unified Declaration with User Defined ConfigMap and Openshift Route with Common Tenant", func() {
-			var origCfg, userCfg, generatedCfg interface{}
-			var cfg as3ADC
-
-			data := readConfigFile(configPath + "as3_route_cfgmap_declaration_common_tenant.json")
-			err := json.Unmarshal([]byte(data), &origCfg)
-			Expect(err).To(BeNil(), "Original Config should be json")
-
-			data = readConfigFile(configPath + "as3config_common_tenant.json")
-			err = json.Unmarshal([]byte(data), &userCfg)
-			Expect(err).To(BeNil(), "Config should be json")
-			mockMgr.appMgr.activeCfgMap.Data = string(data)
-
-			data = readConfigFile(configPath + "as3_route.json")
-			err = json.Unmarshal([]byte(data), &cfg)
-			Expect(err).To(BeNil(), "Route Config should be json")
-			mockMgr.appMgr.as3RouteCfg = cfg
-
-			result := mockMgr.appMgr.getUnifiedAS3Declaration()
+			result, _ := mockMgr.appMgr.getUnifiedAS3Declaration(as3Declaration(mockMgr.appMgr.activeCfgMap.Data), mockMgr.appMgr.as3RouteCfg)
 
 			err = json.Unmarshal([]byte(result), &generatedCfg)
 			Expect(err).To(BeNil(), "Failed to Create Valid JSON")

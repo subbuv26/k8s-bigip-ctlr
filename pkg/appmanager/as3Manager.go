@@ -61,8 +61,11 @@ const (
 var BigIPUsername string
 var BigIPPassword string
 var BigIPURL string
+var BigIPPartitions []string
 var as3RC AS3RestClient
 var certificates string
+var tempAs3ConfigmapDecl as3Declaration
+var tempRouteConfigDecl as3ADC
 
 var buffer map[Member]struct{}
 var epbuffer map[string]struct{}
@@ -95,8 +98,12 @@ func (appMgr *Manager) processUserDefinedAS3(template string) bool {
 
 	appMgr.as3Members = buffer
 	appMgr.watchedAS3Endpoints = epbuffer
-	appMgr.postAS3Declaration(declaration)
-
+	tempAs3ConfigmapDecl = declaration
+	tempRouteConfigDecl = appMgr.as3RouteCfg
+	unifiedDecl, ok := appMgr.getUnifiedAS3Declaration(tempAs3ConfigmapDecl, tempRouteConfigDecl)
+	if ok {
+		appMgr.postAS3Declaration(unifiedDecl)
+	}
 	return true
 }
 
@@ -383,7 +390,11 @@ func (appMgr *Manager) buildAS3Declaration(obj as3Object, template as3Template) 
 func (appMgr *Manager) postAS3Declaration(declaration as3Declaration) {
 	log.Debugf("[as3_log] Processing AS3 POST call with AS3 Manager")
 	as3RC.baseURL = BigIPURL
-	as3RC.restCallToBigIP("POST", "/mgmt/shared/appsvcs/declare", declaration, appMgr.sslInsecure)
+	_, ok := as3RC.restCallToBigIP("POST", "/mgmt/shared/appsvcs/declare", declaration, appMgr.sslInsecure)
+	if ok {
+		appMgr.activeCfgMap.Data = string(tempAs3ConfigmapDecl)
+		appMgr.as3RouteCfg = tempRouteConfigDecl
+	}
 
 }
 
@@ -689,57 +700,41 @@ func (appMgr *Manager) checkValidAS3Endpoints(obj interface{}) (
 	return true, keyList
 }
 
-func (appMgr *Manager) getUnifiedAS3Declaration() as3Declaration {
-	if appMgr.as3RouteCfg == nil {
-		// Triggered from CfgMap call back
-		// return active CfgMap
-		return as3Declaration(appMgr.activeCfgMap.Data)
+func (appMgr *Manager) getUnifiedAS3Declaration(as3ConfigmapDecl as3Declaration, routeConfigDecl as3ADC) (as3Declaration, bool) {
+	if routeConfigDecl == nil && string(as3ConfigmapDecl) == "" {
+		// return false if empty routeConfigDecl and as3ConfigmapDecl
+		return as3Declaration(as3ConfigmapDecl), false
 	}
 
 	// Need to process Routes
 	var as3Config map[string]interface{}
-	if appMgr.activeCfgMap.Data != "" {
+	if as3ConfigmapDecl != "" {
 		// Merge activeCfgMap and as3RouteCfg
-		_ = json.Unmarshal([]byte(appMgr.activeCfgMap.Data), &as3Config)
+		_ = json.Unmarshal([]byte(as3ConfigmapDecl), &as3Config)
 	} else {
 		// Merge base AS3 template and as3RouteCfg
 		_ = json.Unmarshal([]byte(baseAS3Config), &as3Config)
 	}
-	// TODO: Merge User ConfigMap and Route ADC properly
-	var commonTenants []string
 	adc := as3Config["declaration"].(map[string]interface{})
 
-	for rk := range appMgr.as3RouteCfg {
-		for ak := range adc {
-			if rk == ak {
-				commonTenants = append(commonTenants, rk)
-			}
-		}
-	}
-	if len(commonTenants) > 0 {
-		for _, t := range commonTenants {
-			for k, v := range appMgr.as3RouteCfg[t].(map[string]interface{}) {
-				adc[t].(map[string]interface{})[k] = v
-			}
-		}
-	} else {
-		for k, v := range appMgr.as3RouteCfg {
-			adc[k] = v
-		}
+	for k, v := range routeConfigDecl {
+		adc[k] = v
 	}
 
 	unifiedDecl, _ := json.Marshal(as3Config)
 	log.Debugf("as3_log: Unified AS3 Declaration: %v\n", string(unifiedDecl))
-	return as3Declaration(string(unifiedDecl))
+	return as3Declaration(string(unifiedDecl)), true
 }
 
 func (appMgr *Manager) postRouteDeclarationHost() {
 	adc := appMgr.generateAS3RouteDeclaration()
-	log.Debugf("as3_log route shared json: %v", adc)
-	appMgr.as3RouteCfg = adc
 	//Get unified declaration
-	unifiedDecl := appMgr.getUnifiedAS3Declaration()
-	appMgr.postAS3Declaration(unifiedDecl)
+	tempAs3ConfigmapDecl = as3Declaration(appMgr.activeCfgMap.Data)
+	tempRouteConfigDecl = adc
+	unifiedDecl, ok := appMgr.getUnifiedAS3Declaration(tempAs3ConfigmapDecl, tempRouteConfigDecl)
+	if ok {
+		appMgr.postAS3Declaration(unifiedDecl)
+	}
 }
 
 func (appMgr *Manager) generateAS3RouteDeclaration() as3ADC {
@@ -1163,7 +1158,7 @@ func createTLSClient(
 	svcName, caBundleName string,
 	validateCertificate bool,
 	sharedApp as3Application,
-	) bool {
+) bool {
 	// For TLSClient only Cert (DestinationCACertificate) is given and key is empty string
 	if "" != prof.Cert && "" == prof.Key {
 		svc := sharedApp[svcName].(*as3Service)
@@ -1182,4 +1177,20 @@ func createTLSClient(
 		return true
 	}
 	return false
+}
+
+//DeleteAs3ManagedConfiguration as3 managed partitioned configurations when switching back to agent cccl from as3
+func (appMgr *Manager) DeleteAs3ManagedConfiguration() {
+	var as3Config map[string]interface{}
+	if appMgr.agent == "cccl" {
+		_ = json.Unmarshal([]byte(baseAS3Config), &as3Config)
+		m := as3Config["declaration"].(map[string]interface{})
+
+		for i := range BigIPPartitions {
+			log.Debugf("as3_log: Deleting configuration from partition %v\n", BigIPPartitions[i]+"_AS3")
+			m[BigIPPartitions[i]+"_AS3"] = map[string]string{"class": "Tenant"}
+			data, _ := json.Marshal(as3Config)
+			appMgr.postAS3Declaration(as3Declaration(data))
+		}
+	}
 }
