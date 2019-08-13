@@ -32,8 +32,11 @@ func (appMgr *Manager) outputConfig() {
 	switch appMgr.agent {
 	case "as3":
 		//AS3 execution
-		appMgr.sendFDBForRoutes()
-		appMgr.postRouteDeclarationHost()
+		if appMgr.processedItems >= appMgr.queueLen || appMgr.initialState  {
+			appMgr.sendFDBForRoutes()
+			appMgr.postRouteDeclarationHost()
+			appMgr.initialState = true
+		}
 	default:
 		//CCCL execution
 		appMgr.outputConfigLocked()
