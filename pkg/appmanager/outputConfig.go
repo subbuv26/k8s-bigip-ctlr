@@ -32,13 +32,19 @@ func (appMgr *Manager) outputConfig() {
 	switch appMgr.agent {
 	case "as3":
 		//AS3 execution
-		if appMgr.processedItems >= appMgr.queueLen || appMgr.initialState  {
+		log.Debugf("Using agent : %v", appMgr.agent)
+		if appMgr.processedItems >= appMgr.queueLen || appMgr.initialState {
 			appMgr.sendFDBForRoutes()
 			appMgr.postRouteDeclarationHost()
 			appMgr.initialState = true
 		}
 	default:
 		//CCCL execution
+		if appMgr.agent != "cccl" {
+			log.Debugf("User provided invalid agent : %v, using agent as : cccl", appMgr.agent)
+		} else {
+			log.Debugf("Using agent : %v", appMgr.agent)
+		}
 		appMgr.outputConfigLocked()
 	}
 	appMgr.resources.Unlock()
