@@ -138,7 +138,7 @@ type Manager struct {
 	activeCfgMap ActiveAS3ConfigMap
 	// List of Watched Endpoints for user-defined AS3
 	watchedAS3Endpoints map[string]struct{}
-	as3RouteCfg         as3ADC
+	as3RouteCfg         ActiveAS3Route
 }
 
 // FIXME: Refactor to have one struct to hold all AS3 specific data.
@@ -147,6 +147,12 @@ type Manager struct {
 type ActiveAS3ConfigMap struct {
 	Name string // AS3 specific ConfigMap name
 	Data string // if AS3 Name is present, populate this with AS3 template data.
+}
+
+// ActiveAS3Route route for global availability.
+type ActiveAS3Route struct {
+	Tainted bool   // Tainted if route declaration post to BIGIP get error response
+	Data    as3ADC // if AS3 Name is present, populate this with AS3 template data.
 }
 
 // Struct to allow NewManager to receive all or only specific parameters.
@@ -968,7 +974,7 @@ func (appMgr *Manager) syncVirtualServer(sKey serviceQueueKey) error {
 	appMgr.deleteUnusedProfiles(appInf, sKey.Namespace, &stats)
 
 	if stats.vsUpdated > 0 || stats.vsDeleted > 0 || stats.cpUpdated > 0 ||
-		stats.dgUpdated > 0 || stats.poolsUpdated > 0 || len(appMgr.as3Members) > 0 {
+		stats.dgUpdated > 0 || stats.poolsUpdated > 0 || len(appMgr.as3Members) > 0 || appMgr.as3RouteCfg.Tainted {
 		appMgr.outputConfig()
 	} else if !appMgr.initialState && appMgr.processedItems >= appMgr.queueLen {
 		appMgr.outputConfig()

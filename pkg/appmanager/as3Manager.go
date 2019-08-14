@@ -99,7 +99,7 @@ func (appMgr *Manager) processUserDefinedAS3(template string) bool {
 	appMgr.as3Members = buffer
 	appMgr.watchedAS3Endpoints = epbuffer
 	tempAs3ConfigmapDecl = declaration
-	tempRouteConfigDecl = appMgr.as3RouteCfg
+	tempRouteConfigDecl = appMgr.as3RouteCfg.Data
 	unifiedDecl, ok := appMgr.getUnifiedAS3Declaration(tempAs3ConfigmapDecl, tempRouteConfigDecl)
 	if ok {
 		appMgr.postAS3Declaration(unifiedDecl)
@@ -397,7 +397,10 @@ func (appMgr *Manager) postAS3Declaration(declaration as3Declaration) {
 	_, ok := as3RC.restCallToBigIP("POST", "/mgmt/shared/appsvcs/declare", declaration, appMgr.sslInsecure)
 	if ok {
 		appMgr.activeCfgMap.Data = string(tempAs3ConfigmapDecl)
-		appMgr.as3RouteCfg = tempRouteConfigDecl
+		appMgr.as3RouteCfg.Data = tempRouteConfigDecl
+		appMgr.as3RouteCfg.Tainted = false
+	} else {
+		appMgr.as3RouteCfg.Tainted = true
 	}
 
 }
