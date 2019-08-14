@@ -214,7 +214,7 @@ func (appMgr *Manager) getAS3ObjectFromTemplate(
 }
 
 func getClass(obj interface{}) string {
-	cfg, ok := obj.(as3JSONWithArbKeys)
+	cfg, ok := obj.(map[string]interface{})
 	if !ok {
 		// If not a json object it doesn't have class attribute
 		return ""
@@ -1017,8 +1017,17 @@ func createServiceDecl(cfg *ResourceConfig, sharedApp as3Application) {
 	svc.VirtualPort = port
 	svc.SNAT = "auto"
 	for _, v := range cfg.Virtual.IRules {
-		s := strings.Split(v, "/")
-		svc.IRules = append(svc.IRules, as3FormatedString(s[len(s)-1]))
+		splits := strings.Split(v, "/")
+		iRuleName := splits[len(splits)-1]
+		if iRuleName == sslPassthroughIRuleName {
+			svc.ServerTLS = &as3ResourcePointer{
+				BigIP: "/Common/clientssl",
+			}
+			svc.Class = "Service_HTTPS"
+			redirect80 := false
+			svc.Redirect80 = &redirect80
+		}
+		svc.IRules = append(svc.IRules, as3FormatedString(iRuleName))
 	}
 
 	sharedApp[as3FormatedString(cfg.Virtual.Name)] = svc
