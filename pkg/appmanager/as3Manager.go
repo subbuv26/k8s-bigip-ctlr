@@ -833,7 +833,10 @@ func getDGRecordValueForAS3(dgName string, sharedApp as3Application) (string, bo
 				if val, ok := svc.ClientTLS.(*as3ResourcePointer); ok {
 					return val.BigIP, true
 				}
-				return strings.Join([]string{"", DEFAULT_PARTITION, as3SharedApplication, svc.ClientTLS.(string)}, "/"), true
+				if val, ok := svc.ClientTLS.(string); ok {
+					return strings.Join([]string{"", DEFAULT_PARTITION, as3SharedApplication, val}, "/"), true
+				}
+				log.Errorf("Unable to find serverssl for Data Group: %v\n", dgName)
 			}
 		}
 	}
