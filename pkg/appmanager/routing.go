@@ -432,7 +432,11 @@ func abDeploymentPathIRule() string {
 	return iRuleCode
 }
 
-func sslPassthroughIRule() string {
+func (appMgr *Manager) sslPassthroughIRule() string {
+	dgPath := DEFAULT_PARTITION
+	if appMgr.agent == "as3" {
+		dgPath = strings.Join([]string{DEFAULT_PARTITION, as3SharedApplication}, "/")
+	}
 	iRule := fmt.Sprintf(`
 		when CLIENT_ACCEPTED {
 			TCP::collect
@@ -563,7 +567,7 @@ func sslPassthroughIRule() string {
 					SSL::profile $profile
 				}
 			}
-		}`, DEFAULT_PARTITION)
+		}`, dgPath)
 
 	iRuleCode := fmt.Sprintf("%s\n\n%s", selectPoolIRuleFunc(), iRule)
 
