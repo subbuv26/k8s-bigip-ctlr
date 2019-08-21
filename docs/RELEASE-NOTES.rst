@@ -8,11 +8,13 @@ Added Functionality
 * Changed container base image from debian-stretch to debian-buster
 * Support for using AS3 as an orchestration backend for Openshift Routes
 * Added support for disabling Ingress resource processing using `--manage-ingress` option
-* Controller does not master node as a pool member if marked as unscheduled in NodePort Mode
+* Controller does not add master node as a pool member if marked as unscheduled in NodePort Mode
+* Added support for BIG-IP 14.x when using AS3 Orchestration for BIG-IP
 
-Bugs Fixed
+Bug Fixes
 ``````````
 * Controller adds pods in unscheduled nodes as pool members.
+* Controller handles Openshift route TLS termination switch from reencrypt to edge correctly.
 
 Limitations
 ```````````
