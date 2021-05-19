@@ -712,7 +712,18 @@ func setupWatchers(appMgr *appmanager.Manager, resyncPeriod time.Duration) {
 	label := resource.DefaultConfigMapLabel
 
 	if len(*namespaceLabel) == 0 {
-		ls, err := createLabel(label)
+
+		// For periodic monitoring
+		// Non monitoring namespaces will not be processed
+		ls, err := createLabel("")
+		if nil != err {
+			log.Warningf("[INIT] Failed to create label selector: %v", err)
+		}
+		err = appMgr.AddNamespaceLabelInformer(ls, appmanager.ReSyncPeriodDuration)
+		if nil != err {
+			log.Warningf("[INIT] Failed to add label watch for all namespaces:%v", err)
+		}
+		ls, err = createLabel(label)
 		if nil != err {
 			log.Warningf("[INIT] Failed to create label selector: %v", err)
 		}
@@ -740,6 +751,7 @@ func setupWatchers(appMgr *appmanager.Manager, resyncPeriod time.Duration) {
 		if nil != err {
 			log.Warningf("[INIT] Failed to add label watch for all namespaces:%v", err)
 		}
+		appMgr.DynamicNS = true
 	}
 }
 
@@ -777,19 +789,19 @@ func initCustomResourceManager(
 
 	crMgr := crmanager.NewCRManager(
 		crmanager.Params{
-			Config:            config,
-			Namespaces:        *namespaces,
-			NamespaceLabel:    *namespaceLabel,
-			Partition:         (*bigIPPartitions)[0],
-			Agent:             agent,
-			ControllerMode:    *poolMemberType,
-			VXLANName:         vxlanName,
-			VXLANMode:         vxlanMode,
-			UseNodeInternal:   *useNodeInternal,
-			NodePollInterval:  *nodePollInterval,
-			NodeLabelSelector: *nodeLabelSelector,
-			IPAM:              *ipam,
-			ShareNodes:        *shareNodes,
+			Config:             config,
+			Namespaces:         *namespaces,
+			NamespaceLabel:     *namespaceLabel,
+			Partition:          (*bigIPPartitions)[0],
+			Agent:              agent,
+			ControllerMode:     *poolMemberType,
+			VXLANName:          vxlanName,
+			VXLANMode:          vxlanMode,
+			UseNodeInternal:    *useNodeInternal,
+			NodePollInterval:   *nodePollInterval,
+			NodeLabelSelector:  *nodeLabelSelector,
+			IPAM:               *ipam,
+			ShareNodes:         *shareNodes,
 			DefaultRouteDomain: *defaultRouteDomain,
 		},
 	)
@@ -995,7 +1007,7 @@ func main() {
 	np.Run()
 	defer np.Stop()
 
-	setupWatchers(appMgr, 30*time.Second)
+	setupWatchers(appMgr, 0)
 	// Expose Prometheus metrics
 	http.Handle("/metrics", promhttp.Handler())
 	// Add health check e.g. is Python process still there?

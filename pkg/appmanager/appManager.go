@@ -72,6 +72,7 @@ type Manager struct {
 	steadyState         bool
 	queueLen            int
 	processedItems      int
+	processedResources  map[string]bool
 	// Use internal node IPs
 	useNodeInternal bool
 	// Running in nodeport (or cluster) mode
@@ -95,6 +96,7 @@ type Manager struct {
 	// Namespace informer support (namespace labels)
 	nsQueue    workqueue.RateLimitingInterface
 	nsInformer cache.SharedIndexInformer
+	DynamicNS  bool
 	// Event notifier
 	eventNotifier *EventNotifier
 	// Route configurations
@@ -188,6 +190,19 @@ type SvcEndPointsCache struct {
 	labelString string
 }
 
+const (
+
+	// Kinds of Resources
+	Namespaces = "namespaces"
+	Services   = "services"
+	Endpoints  = "endpoints"
+	Configmaps = "configmaps"
+	Ingresses  = "ingresses"
+	Routes     = "routes"
+
+	ReSyncPeriodDuration = 30 * time.Second
+)
+
 var RoutesProcessed []*routeapi.Route
 
 // Create and return a new app manager that meets the Manager interface
@@ -237,6 +252,7 @@ func NewManager(params *Params) *Manager {
 		agentCfgMap:            make(map[string]*AgentCfgMap),
 		agentCfgMapSvcCache:    make(map[string]*SvcEndPointsCache),
 	}
+	manager.processedResources = make(map[string]bool)
 
 	// Initialize agent response worker
 	go manager.agentResponseWorker()
@@ -333,7 +349,7 @@ func (appMgr *Manager) AddNamespaceLabelInformer(
 	appMgr.nsInformer = cache.NewSharedIndexInformer(
 		cache.NewFilteredListWatchFromClient(
 			appMgr.restClientv1,
-			"namespaces",
+			Namespaces,
 			"",
 			optionsModifier,
 		),
@@ -355,6 +371,12 @@ func (appMgr *Manager) AddNamespaceLabelInformer(
 
 func (appMgr *Manager) enqueueNamespace(obj interface{}) {
 	ns := obj.(*v1.Namespace)
+	if !appMgr.DynamicNS && !appMgr.watchingAllNamespacesLocked() {
+		if _, ok := appMgr.getNamespaceInformer(ns.Name); !ok {
+			return
+		}
+	}
+
 	appMgr.nsQueue.Add(ns.ObjectMeta.Name)
 }
 
@@ -382,6 +404,22 @@ func (appMgr *Manager) processNextNamespace() bool {
 	return true
 }
 
+func (appMgr *Manager) triggerSyncResources(ns string, inf *appInformer) {
+	svcs := inf.svcInformer.GetIndexer().List()
+	if svcs != nil && len(svcs) > 0 {
+		svc := svcs[0].(*v1.Service)
+		svcKey := serviceQueueKey{
+			Namespace:    ns,
+			ServiceName:  svc.Name,
+			ResourceKind: Services,
+			ResourceName: svc.Name,
+			Operation:    OprTypeUpdate,
+		}
+		log.Debugf("[CORE] Periodic enqueue of Service from Namespace: %v", ns)
+		appMgr.vsQueue.Add(svcKey)
+	}
+}
+
 func (appMgr *Manager) syncNamespace(nsName string) error {
 	startTime := time.Now()
 	var err error
@@ -400,6 +438,7 @@ func (appMgr *Manager) syncNamespace(nsName string) error {
 	defer appMgr.informersMutex.Unlock()
 	appInf, found := appMgr.getNamespaceInformerLocked(nsName)
 	if exists && found {
+		appMgr.triggerSyncResources(nsName, appInf)
 		return nil
 	}
 	if exists {
@@ -464,11 +503,11 @@ func (appMgr *Manager) GetNamespaceLabelInformer() cache.SharedIndexInformer {
 }
 
 type serviceQueueKey struct {
-	Namespace   string
-	ServiceName string
-	Name        string // Name of the resource
-	Operation   string
-	Data        string
+	Namespace    string
+	ServiceName  string
+	ResourceKind string
+	ResourceName string
+	Operation    string
 }
 
 type appInformer struct {
@@ -497,7 +536,7 @@ func (appMgr *Manager) newAppInformer(
 		svcInformer: cache.NewSharedIndexInformer(
 			cache.NewFilteredListWatchFromClient(
 				appMgr.restClientv1,
-				"services",
+				Services,
 				namespace,
 				everything,
 			),
@@ -508,7 +547,7 @@ func (appMgr *Manager) newAppInformer(
 		endptInformer: cache.NewSharedIndexInformer(
 			cache.NewFilteredListWatchFromClient(
 				appMgr.restClientv1,
-				"endpoints",
+				Endpoints,
 				namespace,
 				everything,
 			),
@@ -526,7 +565,7 @@ func (appMgr *Manager) newAppInformer(
 			appInf.ingInformer = cache.NewSharedIndexInformer(
 				cache.NewFilteredListWatchFromClient(
 					appMgr.netClientv1,
-					"ingresses",
+					Ingresses,
 					namespace,
 					everything,
 				),
@@ -538,7 +577,7 @@ func (appMgr *Manager) newAppInformer(
 			appInf.ingInformer = cache.NewSharedIndexInformer(
 				cache.NewFilteredListWatchFromClient(
 					appMgr.restClientv1beta1,
-					"ingresses",
+					Ingresses,
 					namespace,
 					everything,
 				),
@@ -560,7 +599,7 @@ func (appMgr *Manager) newAppInformer(
 		appInf.cfgMapInformer = cache.NewSharedIndexInformer(
 			cache.NewFilteredListWatchFromClient(
 				appMgr.restClientv1,
-				"configmaps",
+				Configmaps,
 				namespace,
 				cfgMapOptions,
 			),
@@ -596,13 +635,13 @@ func (appMgr *Manager) newAppInformer(
 		log.Infof("[CORE] Handling ConfigMap resource events.")
 		appInf.cfgMapInformer.AddEventHandlerWithResyncPeriod(
 			&cache.ResourceEventHandlerFuncs{
-				AddFunc: func(obj interface{}) { appMgr.enqueueCreatedConfigMap(obj) },
+				AddFunc: func(obj interface{}) { appMgr.enqueueConfigMap(obj, OprTypeCreate) },
 				UpdateFunc: func(old, cur interface{}) {
 					if !reflect.DeepEqual(old, cur) {
-						appMgr.enqueueUpdatedConfigMap(cur)
+						appMgr.enqueueConfigMap(cur, OprTypeUpdate)
 					}
 				},
-				DeleteFunc: func(obj interface{}) { appMgr.enqueueDeletedConfigMap(obj) },
+				DeleteFunc: func(obj interface{}) { appMgr.enqueueConfigMap(obj, OprTypeDelete) },
 			},
 			resyncPeriod,
 		)
@@ -612,18 +651,18 @@ func (appMgr *Manager) newAppInformer(
 
 	appInf.svcInformer.AddEventHandlerWithResyncPeriod(
 		&cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { appMgr.enqueueService(obj) },
-			UpdateFunc: func(old, cur interface{}) { appMgr.enqueueService(cur) },
-			DeleteFunc: func(obj interface{}) { appMgr.enqueueService(obj) },
+			AddFunc:    func(obj interface{}) { appMgr.enqueueService(obj, OprTypeCreate) },
+			UpdateFunc: func(old, cur interface{}) { appMgr.enqueueService(cur, OprTypeUpdate) },
+			DeleteFunc: func(obj interface{}) { appMgr.enqueueService(obj, OprTypeDelete) },
 		},
 		resyncPeriod,
 	)
 
 	appInf.endptInformer.AddEventHandlerWithResyncPeriod(
 		&cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { appMgr.enqueueEndpoints(obj) },
-			UpdateFunc: func(old, cur interface{}) { appMgr.enqueueEndpoints(cur) },
-			DeleteFunc: func(obj interface{}) { appMgr.enqueueEndpoints(obj) },
+			AddFunc:    func(obj interface{}) { appMgr.enqueueEndpoints(obj, OprTypeCreate) },
+			UpdateFunc: func(old, cur interface{}) { appMgr.enqueueEndpoints(cur, OprTypeUpdate) },
+			DeleteFunc: func(obj interface{}) { appMgr.enqueueEndpoints(obj, OprTypeDelete) },
 		},
 		resyncPeriod,
 	)
@@ -632,9 +671,9 @@ func (appMgr *Manager) newAppInformer(
 		log.Infof("[CORE] Handling Ingress resource events.")
 		appInf.ingInformer.AddEventHandlerWithResyncPeriod(
 			&cache.ResourceEventHandlerFuncs{
-				AddFunc:    func(obj interface{}) { appMgr.enqueueIngress(obj) },
-				UpdateFunc: func(old, cur interface{}) { appMgr.enqueueIngress(cur) },
-				DeleteFunc: func(obj interface{}) { appMgr.enqueueIngress(obj) },
+				AddFunc:    func(obj interface{}) { appMgr.enqueueIngress(obj, OprTypeCreate) },
+				UpdateFunc: func(old, cur interface{}) { appMgr.enqueueIngress(cur, OprTypeUpdate) },
+				DeleteFunc: func(obj interface{}) { appMgr.enqueueIngress(obj, OprTypeDelete) },
 			},
 			resyncPeriod,
 		)
@@ -645,9 +684,9 @@ func (appMgr *Manager) newAppInformer(
 	if nil != appMgr.routeClientV1 {
 		appInf.routeInformer.AddEventHandlerWithResyncPeriod(
 			&cache.ResourceEventHandlerFuncs{
-				AddFunc:    func(obj interface{}) { appMgr.enqueueRoute(obj) },
-				UpdateFunc: func(old, cur interface{}) { appMgr.enqueueRoute(cur) },
-				DeleteFunc: func(obj interface{}) { appMgr.enqueueRoute(obj) },
+				AddFunc:    func(obj interface{}) { appMgr.enqueueRoute(obj, OprTypeCreate) },
+				UpdateFunc: func(old, cur interface{}) { appMgr.enqueueRoute(cur, OprTypeUpdate) },
+				DeleteFunc: func(obj interface{}) { appMgr.enqueueRoute(obj, OprTypeDelete) },
 			},
 			resyncPeriod,
 		)
@@ -656,57 +695,46 @@ func (appMgr *Manager) newAppInformer(
 	return &appInf
 }
 
-func (appMgr *Manager) enqueueCreatedConfigMap(obj interface{}) {
-	if ok, keys := appMgr.checkValidConfigMap(obj, OprTypeCreate); ok {
+func (appMgr *Manager) enqueueConfigMap(obj interface{}, operation string) {
+	if ok, keys := appMgr.checkValidConfigMap(obj, operation); ok {
 		for _, key := range keys {
+			key.Operation = operation
 			appMgr.vsQueue.Add(*key)
 		}
 	}
 }
 
-func (appMgr *Manager) enqueueUpdatedConfigMap(obj interface{}) {
-	if ok, keys := appMgr.checkValidConfigMap(obj, OprTypeModify); ok {
-		for _, key := range keys {
-			appMgr.vsQueue.Add(*key)
-		}
-	}
-}
-
-func (appMgr *Manager) enqueueDeletedConfigMap(obj interface{}) {
-	if ok, keys := appMgr.checkValidConfigMap(obj, OprTypeDelete); ok {
-		for _, key := range keys {
-			appMgr.vsQueue.Add(*key)
-		}
-	}
-}
-
-func (appMgr *Manager) enqueueService(obj interface{}) {
+func (appMgr *Manager) enqueueService(obj interface{}, operation string) {
 	if ok, keys := appMgr.checkValidService(obj); ok {
 		for _, key := range keys {
+			key.Operation = operation
 			appMgr.vsQueue.Add(*key)
 		}
 	}
 }
 
-func (appMgr *Manager) enqueueEndpoints(obj interface{}) {
+func (appMgr *Manager) enqueueEndpoints(obj interface{}, operation string) {
 	if ok, keys := appMgr.checkValidEndpoints(obj); ok {
 		for _, key := range keys {
+			key.Operation = operation
 			appMgr.vsQueue.Add(*key)
 		}
 	}
 }
 
-func (appMgr *Manager) enqueueIngress(obj interface{}) {
+func (appMgr *Manager) enqueueIngress(obj interface{}, operation string) {
 	if ok, keys := appMgr.checkValidIngress(obj); ok {
 		for _, key := range keys {
+			key.Operation = operation
 			appMgr.vsQueue.Add(*key)
 		}
 	}
 }
 
-func (appMgr *Manager) enqueueRoute(obj interface{}) {
+func (appMgr *Manager) enqueueRoute(obj interface{}, operation string) {
 	if ok, keys := appMgr.checkValidRoute(obj); ok {
 		for _, key := range keys {
+			key.Operation = operation
 			appMgr.vsQueue.Add(*key)
 		}
 	}
@@ -919,8 +947,16 @@ func (appMgr *Manager) processNextVirtualServer() bool {
 	}
 
 	defer appMgr.vsQueue.Done(key)
+	skey := key.(serviceQueueKey)
+	if !appMgr.steadyState && skey.ResourceKind != Services {
+		if skey.Operation != OprTypeCreate {
+			appMgr.vsQueue.AddRateLimited(key)
+		}
+		appMgr.vsQueue.Forget(key)
+		return true
+	}
 
-	err := appMgr.syncVirtualServer(key.(serviceQueueKey))
+	err := appMgr.syncVirtualServer(skey)
 	if err == nil {
 		if !appMgr.steadyState {
 			appMgr.processedItems++
@@ -961,8 +997,9 @@ func (appMgr *Manager) syncVirtualServer(sKey serviceQueueKey) error {
 	startTime := time.Now()
 	defer func() {
 		endTime := time.Now()
-		log.Debugf("[CORE] Finished syncing virtual servers %+v in namespace %+v (%v)",
-			sKey.ServiceName, sKey.Namespace, endTime.Sub(startTime))
+		log.Debugf("[CORE] Finished syncing virtual servers %+v in namespace %+v (%v), %v/%v",
+			sKey.ServiceName, sKey.Namespace, endTime.Sub(startTime), appMgr.processedItems, appMgr.queueLen)
+		log.Debugf("ServiceKey: %+v", sKey)
 	}()
 	// Get the informers for the namespace. This will tell us if we care about
 	// this item.
@@ -983,6 +1020,36 @@ func (appMgr *Manager) syncVirtualServer(sKey serviceQueueKey) error {
 		// Returning non-nil err will re-queue this item with rate-limiting.
 		log.Warningf("[CORE] Error looking up service '%v': %v\n", svcKey, err)
 		return err
+	}
+
+	// Processing just one service from a namespace processes all the resources in that namespace
+	if sKey.ResourceKind == Services {
+		rkey := Services + "_" + sKey.Namespace
+		if !appMgr.steadyState && sKey.Operation == OprTypeCreate {
+			if _, ok := appMgr.processedResources[rkey]; ok {
+				if !appMgr.steadyState && appMgr.processedItems >= appMgr.queueLen-1 {
+					appMgr.deployResource()
+					appMgr.steadyState = true
+				}
+				return nil
+			}
+			appMgr.processedResources[rkey] = true
+		}
+	} else {
+		// Resources other than Services will be tracked if they are processed earlier
+		resKey := prepareResourceKey(sKey.ResourceKind, sKey.Namespace, sKey.ResourceName)
+		switch sKey.Operation {
+		// If a resource is processed earlier and still sKey gives us CREATE event,
+		// then it was handled earlier when associated service processed
+		// otherwise just mark it as processed and continue
+		case OprTypeCreate:
+			if _, ok := appMgr.processedResources[resKey]; ok {
+				return nil
+			}
+			appMgr.processedResources[resKey] = true
+		case OprTypeDelete:
+			delete(appMgr.processedResources, resKey)
+		}
 	}
 
 	// Use a map to allow ports in the service to be looked up quickly while
@@ -1045,9 +1112,9 @@ func (appMgr *Manager) syncVirtualServer(sKey serviceQueueKey) error {
 
 	switch {
 	case stats.isStatsAvailable(),
-		!appMgr.steadyState && appMgr.processedItems >= appMgr.queueLen:
+		!appMgr.steadyState && appMgr.processedItems >= appMgr.queueLen-1:
 		{
-			if appMgr.processedItems >= appMgr.queueLen || appMgr.steadyState {
+			if appMgr.processedItems >= appMgr.queueLen-1 || appMgr.steadyState {
 				appMgr.deployResource()
 				appMgr.steadyState = true
 			}
@@ -1068,7 +1135,7 @@ func (appMgr *Manager) syncConfigMaps(
 
 	// Handle delete cfgMap Operation for Agent
 	if appMgr.AgentCIS.IsImplInAgent(ResourceTypeCfgMap) {
-		key := sKey.Namespace + "/" + sKey.Name
+		key := sKey.Namespace + "/" + sKey.ResourceName
 		if sKey.Operation == OprTypeDelete {
 			appMgr.agentCfgMap[key].Operation = OprTypeDelete
 			stats.vsDeleted += 1
@@ -1135,6 +1202,10 @@ func (appMgr *Manager) syncConfigMaps(
 		if cm.ObjectMeta.Namespace != sKey.Namespace {
 			continue
 		}
+
+		// Mark each resource as it is already processed
+		// So that later the create event of the same resource will not processed, unnecessarily
+		appMgr.processedResources[prepareResourceKey(Configmaps, sKey.Namespace, cm.Name)] = true
 
 		if appMgr.AgentCIS.IsImplInAgent(ResourceTypeCfgMap) {
 			//ignore invalid as3 configmaps if found.
@@ -1261,6 +1332,7 @@ func (appMgr *Manager) syncIngresses(
 			sKey.Namespace, err)
 		return err
 	}
+	log.Debugf("[PERF] Namespace: %s, Number of Ingresses: %v", sKey.Namespace, len(ingByIndex))
 	svcFwdRulesMap := NewServiceFwdRuleMap()
 	for _, obj := range ingByIndex {
 		// We need to look at all ingresses in the store, parse the data blob,
@@ -1412,23 +1484,40 @@ func (appMgr *Manager) syncIngresses(
 					}
 				}
 
-				if ok, found, updated := appMgr.handleConfigForType(
-					rsCfg, sKey, rsMap, rsName, svcPortMap,
-					svc, appInf, svcs, obj); !ok {
-					stats.vsUpdated += updated
-					continue
-				} else {
-					if updated > 0 && !appMgr.processAllMultiSvc(len(rsCfg.Pools),
-						rsCfg.GetName()) {
-						updated -= 1
-					}
-					stats.vsFound += found
-					stats.vsUpdated += updated
-					if updated > 0 {
-						msg := fmt.Sprintf(
-							"Created a ResourceConfig '%v' for the Ingress.",
-							rsCfg.GetName())
-						appMgr.recordIngressEvent(ing, "ResourceConfigured", msg)
+				for _, svcName := range svcs {
+					// Lookup the service
+					svcBackend := sKey.Namespace + "/" + svcName
+					svc, _, _ := appInf.svcInformer.GetIndexer().GetByKey(svcBackend)
+					//if backend svc exists, process the ingress
+					if nil != svc {
+						//backend svc key of ingress
+						svcKey := serviceQueueKey{
+							ServiceName: svcName,
+							Namespace:   sKey.Namespace,
+						}
+						svcPortMap := make(map[int32]bool)
+						for _, portSpec := range svc.(*v1.Service).Spec.Ports {
+							svcPortMap[portSpec.Port] = false
+						}
+						if ok, found, updated := appMgr.handleConfigForType(
+							rsCfg, svcKey, rsMap, rsName, svcPortMap,
+							svc.(*v1.Service), appInf, svcs, ing); !ok {
+							stats.vsUpdated += updated
+							continue
+						} else {
+							if updated > 0 && !appMgr.processAllMultiSvc(len(rsCfg.Pools),
+								rsCfg.GetName()) {
+								updated -= 1
+							}
+							stats.vsFound += found
+							stats.vsUpdated += updated
+							if updated > 0 {
+								msg := fmt.Sprintf(
+									"Created a ResourceConfig '%v' for the Ingress.",
+									rsCfg.GetName())
+								appMgr.recordIngressEvent(ing, "ResourceConfigured", msg)
+							}
+						}
 					}
 				}
 				// Set the Ingress Status IP address
@@ -1646,6 +1735,11 @@ func (appMgr *Manager) syncRoutes(
 		if route.ObjectMeta.Namespace != sKey.Namespace {
 			continue
 		}
+
+		// Mark each resource as it is already processed during init Time
+		// So that later the create event of the same resource will not processed, unnecessarily
+		appMgr.processedResources[prepareResourceKey(Routes, sKey.Namespace, route.Name)] = true
+
 		key := route.Spec.Host + route.Spec.Path
 		if host, ok := routePathMap[key]; ok {
 			if host == route.Spec.Host {
@@ -2407,6 +2501,8 @@ func (appMgr *Manager) setIngressStatus(
 		ing.Status.LoadBalancer.Ingress = append(ing.Status.LoadBalancer.Ingress, lbIngress)
 	} else if ing.Status.LoadBalancer.Ingress[0].IP != ip {
 		ing.Status.LoadBalancer.Ingress[0] = lbIngress
+	} else {
+		return
 	}
 	_, updateErr := appMgr.kubeClient.ExtensionsV1beta1().
 		Ingresses(ing.ObjectMeta.Namespace).UpdateStatus(context.TODO(), ing, metav1.UpdateOptions{})
@@ -2850,4 +2946,8 @@ func (appMgr *Manager) exposeKubernetesService(
 		}
 	}
 	return true, "", ""
+}
+
+func prepareResourceKey(kind, namespace, name string) string {
+	return kind + "_" + namespace + "/" + name
 }
