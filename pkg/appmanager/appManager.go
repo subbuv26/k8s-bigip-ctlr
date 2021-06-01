@@ -1336,7 +1336,7 @@ func (appMgr *Manager) syncIngresses(
 	svcFwdRulesMap := NewServiceFwdRuleMap()
 	for _, obj := range ingByIndex {
 		// We need to look at all ingresses in the store, parse the data blob,
-		// and see if it belongs to the service that has changed.
+		// and process ingresses that has changed.
 		//TODO remove the switch case and checkV1beta1Ingress function
 		switch obj.(type) {
 		case *v1beta1.Ingress:
@@ -1483,41 +1483,23 @@ func (appMgr *Manager) syncIngresses(
 						}
 					}
 				}
-
-				for _, svcName := range svcs {
-					// Lookup the service
-					svcBackend := sKey.Namespace + "/" + svcName
-					svc, _, _ := appInf.svcInformer.GetIndexer().GetByKey(svcBackend)
-					//if backend svc exists, process the ingress
-					if nil != svc {
-						//backend svc key of ingress
-						svcKey := serviceQueueKey{
-							ServiceName: svcName,
-							Namespace:   sKey.Namespace,
-						}
-						svcPortMap := make(map[int32]bool)
-						for _, portSpec := range svc.(*v1.Service).Spec.Ports {
-							svcPortMap[portSpec.Port] = false
-						}
-						if ok, found, updated := appMgr.handleConfigForType(
-							rsCfg, svcKey, rsMap, rsName, svcPortMap,
-							svc.(*v1.Service), appInf, svcs, ing); !ok {
-							stats.vsUpdated += updated
-							continue
-						} else {
-							if updated > 0 && !appMgr.processAllMultiSvc(len(rsCfg.Pools),
-								rsCfg.GetName()) {
-								updated -= 1
-							}
-							stats.vsFound += found
-							stats.vsUpdated += updated
-							if updated > 0 {
-								msg := fmt.Sprintf(
-									"Created a ResourceConfig '%v' for the Ingress.",
-									rsCfg.GetName())
-								appMgr.recordIngressEvent(ing, "ResourceConfigured", msg)
-							}
-						}
+				if ok, found, updated := appMgr.handleConfigForTypeIngress(
+					rsCfg, sKey, rsMap, rsName, svcPortMap,
+					svc, appInf, svcs, obj); !ok {
+					stats.vsUpdated += updated
+					continue
+				} else {
+					if updated > 0 && !appMgr.processAllMultiSvc(len(rsCfg.Pools),
+						rsCfg.GetName()) {
+						updated -= 1
+					}
+					stats.vsFound += found
+					stats.vsUpdated += updated
+					if updated > 0 {
+						msg := fmt.Sprintf(
+							"Created a ResourceConfig '%v' for the Ingress.",
+							rsCfg.GetName())
+						appMgr.recordIngressEvent(ing, "ResourceConfigured", msg)
 					}
 				}
 				// Set the Ingress Status IP address
@@ -1668,7 +1650,7 @@ func (appMgr *Manager) syncIngresses(
 					}
 				}
 
-				if ok, found, updated := appMgr.handleConfigForType(
+				if ok, found, updated := appMgr.handleConfigForTypeIngress(
 					rsCfg, sKey, rsMap, rsName, svcPortMap,
 					svc, appInf, svcs, obj); !ok {
 					stats.vsUpdated += updated
@@ -2073,6 +2055,168 @@ func serviceMatch(svcs []string, sKey serviceQueueKey) bool {
 		}
 	}
 	return false
+}
+
+// Common handling function for ConfigMaps, Ingresses, and Routes
+func (appMgr *Manager) handleConfigForTypeIngress(
+	rsCfg *ResourceConfig,
+	sKey serviceQueueKey,
+	rsMap ResourceMap,
+	rsName string,
+	svcPortMap map[int32]bool,
+	svc *v1.Service,
+	appInf *appInformer,
+	currResourceSvcs []string, // Used for Ingress/Routes
+	obj interface{}, // Used for writing events
+) (bool, int, int) {
+	vsFound := 0
+	vsUpdated := 0
+	// Get the pool that matches the sKey we are processing
+	var pool Pool
+	//found := false
+	plIdx := 0
+	for _, backendSvc := range currResourceSvcs {
+		//get current resource skey and port
+		svcBackend := sKey.Namespace + "/" + backendSvc
+		//backend svc key of ingress
+		CurrsvcKey := serviceQueueKey{
+			ServiceName: backendSvc,
+			Namespace:   sKey.Namespace,
+		}
+		backend, _, _ := appInf.svcInformer.GetIndexer().GetByKey(svcBackend)
+		deactivated := false
+		for i, pl := range rsCfg.Pools {
+			if pl.ServiceName == CurrsvcKey.ServiceName &&
+				poolInNamespace(rsCfg, pl.Name, sKey.Namespace) {
+				pool = pl
+				plIdx = i
+				break
+			}
+		}
+		// Make sure pool members from the old config are applied to the new
+		// config pools.
+		appMgr.syncPoolMembers(rsName, rsCfg)
+
+		svcKey := ServiceKey{
+			Namespace:   sKey.Namespace,
+			ServiceName: pool.ServiceName,
+			ServicePort: pool.ServicePort,
+		}
+		if nil != backend {
+			svc := backend.(*v1.Service)
+			svcPortMap := make(map[int32]bool)
+			for _, portSpec := range svc.Spec.Ports {
+				svcPortMap[portSpec.Port] = false
+			}
+			// Match, remove config from rsMap so we don't delete it at the end.
+			// (rsMap contains configs we want to delete).
+			// In the case of Ingress/Routes: If the svc(s) of the currently processed ingress/route
+			// doesn't match the svc in our ServiceKey, then we don't want to remove the config from the map.
+			// Multiple Ingress/Routes can share a config, so if one Ingress/Route is deleted, then just
+			// the pools for that resource should be deleted from our config. By keeping the config in the map,
+			// we delete the necessary pools later on, while leaving everything else intact.
+			cfgList := rsMap[pool.ServicePort]
+			if serviceMatch(currResourceSvcs, CurrsvcKey) {
+				if len(cfgList) == 1 && cfgList[0].GetName() == rsName {
+					delete(rsMap, pool.ServicePort)
+				} else if len(cfgList) > 1 {
+					for index, val := range cfgList {
+						if val.GetName() == rsName {
+							cfgList = append(cfgList[:index], cfgList[index+1:]...)
+						}
+					}
+					rsMap[pool.ServicePort] = cfgList
+				}
+			}
+
+			bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "port-not-found").Set(0)
+			if _, ok := svcPortMap[pool.ServicePort]; !ok {
+				log.Debugf("[CORE] Process Service delete - name: %v namespace: %v",
+					pool.ServiceName, svcKey.Namespace)
+				log.Infof("[CORE] Port '%v' for service '%v' was not found.",
+					pool.ServicePort, pool.ServiceName)
+				bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "port-not-found").Set(1)
+				bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "success").Set(0)
+				if appMgr.deactivateVirtualServer(svcKey, rsName, rsCfg, plIdx) {
+					vsUpdated += 1
+				}
+				deactivated = true
+			}
+
+			bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "service-not-found").Set(0)
+
+			// Update pool members.
+			vsFound += 1
+			correctBackend := true
+			var reason string
+			var msg string
+
+			if svc.ObjectMeta.Labels["component"] == "apiserver" && svc.ObjectMeta.Labels["provider"] == "kubernetes" {
+				appMgr.exposeKubernetesService(svc, svcKey, rsCfg, appInf, plIdx)
+			} else {
+				if appMgr.IsNodePort() {
+					correctBackend, reason, msg =
+						appMgr.updatePoolMembersForNodePort(svc, svcKey, rsCfg, plIdx)
+				} else {
+					correctBackend, reason, msg =
+						appMgr.updatePoolMembersForCluster(svc, svcKey, rsCfg, appInf, plIdx)
+				}
+			}
+			// This will only update the config if the vs actually changed.
+			if appMgr.saveVirtualServer(svcKey, rsName, rsCfg)  {
+				vsUpdated += 1
+
+				// If this is an Ingress resource, add an event if there was a backend error
+				if !correctBackend {
+					if obj != nil {
+						switch obj.(type) {
+						case *v1beta1.Ingress:
+							appMgr.recordIngressEvent(obj.(*v1beta1.Ingress), reason, msg)
+						default:
+							appMgr.recordV1IngressEvent(obj.(*netv1.Ingress), reason, msg)
+
+						}
+					}
+				}
+			}
+
+			if !deactivated {
+				bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "success").Set(1)
+			}
+		} else {
+			// The service is gone, de-activate it in the config.
+			log.Infof("[CORE] Service '%v' has not been found.", pool.ServiceName)
+			bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "service-not-found").Set(1)
+			bigIPPrometheus.MonitoredServices.WithLabelValues(sKey.Namespace, rsName, "success").Set(0)
+
+			if !deactivated {
+				deactivated = true
+				if appMgr.deactivateVirtualServer(svcKey, rsName, rsCfg, plIdx) {
+					vsUpdated += 1
+				}
+			}
+
+			// If this is an Ingress resource, add an event that the service wasn't found
+			if obj != nil {
+				msg := fmt.Sprintf("Service '%v' has not been found.",
+					pool.ServiceName)
+				switch obj.(type) {
+				case *v1beta1.Ingress:
+					appMgr.recordIngressEvent(obj.(*v1beta1.Ingress), "ServiceNotFound", msg)
+				default:
+					appMgr.recordV1IngressEvent(obj.(*netv1.Ingress), "ServiceNotFound", msg)
+
+				}
+			}
+		}
+		if vsUpdated > 0 && !appMgr.processAllMultiSvc(len(rsCfg.Pools),
+			rsCfg.GetName()) {
+			vsUpdated -= vsUpdated
+			vsFound -= vsFound
+		}
+	}
+
+	return true, vsFound, vsUpdated
 }
 
 // Common handling function for ConfigMaps, Ingresses, and Routes
